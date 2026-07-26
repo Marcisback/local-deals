@@ -1,0 +1,14 @@
+{
+  "name": "local-deals",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "mobile:start": "npm run start --workspace apps/mobile",
+    "mobile:android": "npm run android --workspace apps/mobile",
+    "mobile:ios": "npm run ios --workspace apps/mobile",
+    "mobile:typecheck": "npm run typecheck --workspace apps/mobile"
+  }
+}

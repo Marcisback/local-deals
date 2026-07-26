@@ -1,0 +1,10 @@
+{
+  "expo": {
+    "name": "Local Deals",
+    "slug": "local-deals",
+    "scheme": "localdeals",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light"
+  }
+}
