@@ -6,6 +6,10 @@
     "packages/*"
   ],
   "scripts": {
+    "api:dev": "npm run dev --workspace apps/api",
+    "api:build": "npm run build --workspace apps/api",
+    "api:start": "npm run start --workspace apps/api",
+    "api:typecheck": "npm run typecheck --workspace apps/api",
     "mobile:start": "npm run start --workspace apps/mobile",
     "mobile:android": "npm run android --workspace apps/mobile",
     "mobile:ios": "npm run ios --workspace apps/mobile",
