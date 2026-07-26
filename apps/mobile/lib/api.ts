@@ -1,6 +1,6 @@
-import type { Deal, NearbyDeal, NearbyDealsResponse, Schedule, Venue } from '../types';
+import type { Deal, NearbyDeal, NearbyDealsResponse, RadiusMiles, Schedule, Venue, VenueType } from '../types';
 
-export const DISCOVERY_RADIUS_MILES = 25;
+export const DEFAULT_DISCOVERY_RADIUS_MILES: RadiusMiles = 25;
 
 export function getNearbyDealsApiUrl() {
   return process.env.EXPO_PUBLIC_API_URL?.trim() ?? null;
@@ -10,9 +10,10 @@ export async function fetchNearbyDeals(
   apiUrl: string,
   latitude: number,
   longitude: number,
-  radiusMiles = DISCOVERY_RADIUS_MILES
+  radiusMiles: RadiusMiles = DEFAULT_DISCOVERY_RADIUS_MILES,
+  venueType?: VenueType
 ): Promise<NearbyDealsResponse> {
-  const url = buildNearbyDealsUrl(apiUrl, latitude, longitude, radiusMiles);
+  const url = buildNearbyDealsUrl(apiUrl, latitude, longitude, radiusMiles, venueType);
   const response = await fetch(url);
 
   if (!response.ok) {
@@ -28,16 +29,27 @@ export async function fetchNearbyDeals(
   return data;
 }
 
-function buildNearbyDealsUrl(apiUrl: string, latitude: number, longitude: number, radiusMiles: number): string {
+function buildNearbyDealsUrl(
+  apiUrl: string,
+  latitude: number,
+  longitude: number,
+  radiusMiles: RadiusMiles,
+  venueType?: VenueType
+): string {
   const url = new URL(apiUrl);
   const basePath = url.pathname.replace(/\/$/, '');
-
-  url.pathname = `${basePath}/deals/nearby`;
-  url.search = new URLSearchParams({
+  const searchParams = new URLSearchParams({
     lat: latitude.toString(),
     lng: longitude.toString(),
     radiusMiles: radiusMiles.toString()
-  }).toString();
+  });
+
+  if (venueType) {
+    searchParams.set('venueType', venueType);
+  }
+
+  url.pathname = `${basePath}/deals/nearby`;
+  url.search = searchParams.toString();
 
   return url.toString();
 }

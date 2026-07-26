@@ -5,11 +5,15 @@ import { queryDatabase } from '../db.js';
 const DEFAULT_RADIUS_MILES = 5;
 const MAX_RADIUS_MILES = 25;
 const METERS_PER_MILE = 1609.344;
+const ALLOWED_VENUE_TYPES = ['restaurant', 'bar', 'brewery', 'cafe'] as const;
+
+type VenueType = (typeof ALLOWED_VENUE_TYPES)[number];
 
 type NearbyDealsQuery = {
   lat?: string;
   lng?: string;
   radiusMiles?: string;
+  venueType?: string;
 };
 
 type NearbyDealRow = {
@@ -75,6 +79,7 @@ export const dealRoutes: FastifyPluginAsync = async (app) => {
               v.status = 'active'
               and d.status = 'active'
               and st_dwithin(v.location, ul.point, ul.radius_meters)
+              and ($5::text is null or v.venue_type = $5::text)
               and (d.starts_on is null or d.starts_on <= timezone(v.timezone, now())::date)
               and (d.ends_on is null or d.ends_on >= timezone(v.timezone, now())::date)
               and ds.day_of_week = extract(dow from timezone(v.timezone, now()))::int
@@ -102,7 +107,8 @@ export const dealRoutes: FastifyPluginAsync = async (app) => {
           parsed.value.lng,
           parsed.value.lat,
           parsed.value.radiusMiles * METERS_PER_MILE,
-          METERS_PER_MILE
+          METERS_PER_MILE,
+          parsed.value.venueType ?? null
         ]
       );
 
@@ -173,12 +179,18 @@ function parseNearbyDealsQuery(query: NearbyDealsQuery) {
     radiusMiles = parsedRadius.value;
   }
 
+  const venueType = parseVenueTypeParam(query.venueType);
+  if (!venueType.ok) {
+    return venueType;
+  }
+
   return {
     ok: true as const,
     value: {
       lat: lat.value,
       lng: lng.value,
-      radiusMiles
+      radiusMiles,
+      venueType: venueType.value
     }
   };
 }
@@ -204,4 +216,29 @@ function parseNumberParam(value: string | undefined, name: 'lat' | 'lng' | 'radi
     ok: true as const,
     value: parsed
   };
+}
+
+function parseVenueTypeParam(value: string | undefined) {
+  if (value === undefined) {
+    return {
+      ok: true as const,
+      value: undefined
+    };
+  }
+
+  if (isVenueType(value)) {
+    return {
+      ok: true as const,
+      value
+    };
+  }
+
+  return {
+    ok: false as const,
+    error: 'Invalid query parameter: venueType'
+  };
+}
+
+function isVenueType(value: string): value is VenueType {
+  return ALLOWED_VENUE_TYPES.some((allowedType) => allowedType === value);
 }

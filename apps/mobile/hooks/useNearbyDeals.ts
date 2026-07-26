@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 
-import type { NearbyDeal } from '../types';
-import { DISCOVERY_RADIUS_MILES, fetchNearbyDeals, getNearbyDealsApiUrl } from '../lib/api';
+import type { NearbyDeal, RadiusMiles, VenueFilter } from '../types';
+import { fetchNearbyDeals, getNearbyDealsApiUrl } from '../lib/api';
 import type { Coordinates } from './useLocation';
 
 export type NearbyDealsStatus = 'idle' | 'loading' | 'success' | 'config-error' | 'error';
@@ -12,7 +12,11 @@ type UseNearbyDealsResult = {
   errorMessage: string;
 };
 
-export function useNearbyDeals(coordinates: Coordinates | null): UseNearbyDealsResult {
+export function useNearbyDeals(
+  coordinates: Coordinates | null,
+  radiusMiles: RadiusMiles,
+  venueFilter: VenueFilter
+): UseNearbyDealsResult {
   const [status, setStatus] = useState<NearbyDealsStatus>('idle');
   const [deals, setDeals] = useState<NearbyDeal[]>([]);
   const [errorMessage, setErrorMessage] = useState('');
@@ -30,6 +34,7 @@ export function useNearbyDeals(coordinates: Coordinates | null): UseNearbyDealsR
     }
 
     const { latitude, longitude } = coordinates;
+    const venueType = venueFilter === 'all' ? undefined : venueFilter;
 
     async function loadNearbyDeals() {
       const apiUrl = getNearbyDealsApiUrl();
@@ -52,7 +57,8 @@ export function useNearbyDeals(coordinates: Coordinates | null): UseNearbyDealsR
           apiUrl,
           latitude,
           longitude,
-          DISCOVERY_RADIUS_MILES
+          radiusMiles,
+          venueType
         );
 
         if (!isMounted) {
@@ -76,7 +82,7 @@ export function useNearbyDeals(coordinates: Coordinates | null): UseNearbyDealsR
     return () => {
       isMounted = false;
     };
-  }, [coordinates?.latitude, coordinates?.longitude]);
+  }, [coordinates?.latitude, coordinates?.longitude, radiusMiles, venueFilter]);
 
   return {
     status,

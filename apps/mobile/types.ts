@@ -2,6 +2,12 @@ export type NearbyDealsResponse = {
   deals: NearbyDeal[];
 };
 
+export type RadiusMiles = 5 | 10 | 15 | 25;
+
+export type VenueType = 'restaurant' | 'bar' | 'brewery' | 'cafe';
+
+export type VenueFilter = 'all' | VenueType;
+
 export type NearbyDeal = {
   venue: Venue;
   deal: Deal;
