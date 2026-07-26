@@ -1,4 +1,4 @@
-import { Pool, type QueryResult, type QueryResultRow } from 'pg';
+import { Pool, type PoolClient, type QueryResult, type QueryResultRow } from 'pg';
 
 let pool: Pool | null = null;
 
@@ -16,6 +16,27 @@ export async function queryDatabase<T extends QueryResultRow>(text: string): Pro
 export async function queryDatabase<T extends QueryResultRow>(text: string, values: unknown[]): Promise<QueryResult<T>>;
 export async function queryDatabase<T extends QueryResultRow>(text: string, values?: unknown[]) {
   return values === undefined ? getDatabasePool().query<T>(text) : getDatabasePool().query<T>(text, values);
+}
+
+export async function withDatabaseTransaction<T>(callback: (client: PoolClient) => Promise<T>) {
+  const client = await getDatabasePool().connect();
+
+  try {
+    await client.query('begin');
+    const result = await callback(client);
+    await client.query('commit');
+    return result;
+  } catch (error) {
+    try {
+      await client.query('rollback');
+    } catch {
+      // Prefer surfacing the original failure; rollback errors are secondary.
+    }
+
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export function hasDatabasePool() {
