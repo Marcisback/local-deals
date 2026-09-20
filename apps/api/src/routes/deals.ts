@@ -30,6 +30,7 @@ type NearbyDealRow = {
   deal_title: string;
   deal_description: string | null;
   distance_miles: number;
+  availability: 'active_now' | 'later_today';
   day_of_week: number;
   start_time: string;
   end_time: string;
@@ -77,7 +78,7 @@ export const dealRoutes: FastifyPluginAsync<DealRoutesOptions> = async (app, opt
             cross join user_location ul
             cross join request_context rc
           ),
-          ranked_deals as (
+          deal_occurrences as (
             select
               vc.venue_id,
               vc.venue_name,
@@ -88,58 +89,54 @@ export const dealRoutes: FastifyPluginAsync<DealRoutesOptions> = async (app, opt
               d.title as deal_title,
               d.description as deal_description,
               round((st_distance(vc.location, vc.point) / $4::double precision)::numeric, 2)::double precision as distance_miles,
+              case
+                when vc.local_now >= occurrence.schedule_start_at then 'active_now'
+                else 'later_today'
+              end as availability,
               ds.day_of_week,
               ds.start_time::text as start_time,
-              coalesce(ds.end_time::text, active_until_close.resolved_end_time::text) as end_time,
-              row_number() over (
-                partition by d.id
-                order by
-                  st_distance(vc.location, vc.point),
-                  ds.day_of_week,
-                  ds.start_time,
-                  coalesce(ds.end_time, active_until_close.resolved_end_time)
-              ) as row_number
+              coalesce(ds.end_time::text, venue_close.resolved_end_time::text) as end_time,
+              occurrence.schedule_start_at
             from venue_context vc
             join public.deals d on d.venue_id = vc.venue_id
             join public.deal_schedule_windows ds on ds.deal_id = d.id
+            cross join lateral (
+              select
+                case
+                  when ds.day_of_week = vc.local_dow then vc.local_date
+                  when ds.ends_at_venue_close = true and ds.day_of_week = vc.previous_dow then vc.local_date - 1
+                  else null
+                end as source_date
+            ) schedule_date
+            cross join lateral (
+              select schedule_date.source_date::timestamp + ds.start_time as schedule_start_at
+            ) occurrence
             left join lateral (
-              -- Until-close windows resolve against the venue-hours row for the schedule's source day,
-              -- so a Wednesday late-night deal can stay active after midnight on Thursday.
+              -- Until-close windows resolve against venue hours for the schedule's source day,
+              -- including a previous-day occurrence that remains active after midnight.
               select
                 vh.close_time as resolved_end_time,
-                occurrence.schedule_start_at,
-                occurrence.schedule_end_at
+                schedule_date.source_date::timestamp + vh.close_time
+                  + case when vh.closes_next_day then interval '1 day' else interval '0' end as schedule_end_at
               from public.venue_hours vh
-              cross join lateral (
-                select
-                  case
-                    when ds.day_of_week = vc.local_dow then vc.local_date::timestamp + ds.start_time
-                    when ds.day_of_week = vc.previous_dow then (vc.local_date::timestamp - interval '1 day') + ds.start_time
-                    else null
-                  end as schedule_start_at,
-                  case
-                    when ds.day_of_week = vc.local_dow then vc.local_date::timestamp + vh.open_time
-                    when ds.day_of_week = vc.previous_dow then (vc.local_date::timestamp - interval '1 day') + vh.open_time
-                    else null
-                  end as venue_open_at,
-                  case
-                    when ds.day_of_week = vc.local_dow then vc.local_date::timestamp + vh.close_time + case when vh.closes_next_day then interval '1 day' else interval '0' end
-                    when ds.day_of_week = vc.previous_dow then (vc.local_date::timestamp - interval '1 day') + vh.close_time + case when vh.closes_next_day then interval '1 day' else interval '0' end
-                    else null
-                  end as schedule_end_at
-              ) occurrence
               where
                 ds.ends_at_venue_close = true
                 and vh.venue_id = vc.venue_id
                 and vh.day_of_week = ds.day_of_week
-                and occurrence.schedule_start_at is not null
-                and occurrence.venue_open_at <= occurrence.schedule_start_at
-                and occurrence.schedule_end_at > occurrence.schedule_start_at
-                and vc.local_now >= occurrence.schedule_start_at
-                and vc.local_now < occurrence.schedule_end_at
-              order by occurrence.schedule_end_at asc
+                and schedule_date.source_date is not null
+                and schedule_date.source_date::timestamp + vh.open_time <= occurrence.schedule_start_at
+                and schedule_date.source_date::timestamp + vh.close_time
+                  + case when vh.closes_next_day then interval '1 day' else interval '0' end
+                  > occurrence.schedule_start_at
+              order by schedule_end_at asc
               limit 1
-            ) active_until_close on true
+            ) venue_close on true
+            cross join lateral (
+              select coalesce(
+                schedule_date.source_date::timestamp + ds.end_time,
+                venue_close.schedule_end_at
+              ) as schedule_end_at
+            ) occurrence_end
             where
               vc.venue_status = 'active'
               and vc.venue_is_verified = true
@@ -149,19 +146,23 @@ export const dealRoutes: FastifyPluginAsync<DealRoutesOptions> = async (app, opt
               and ($5::text is null or vc.venue_type = $5::text)
               and (d.starts_on is null or d.starts_on <= vc.local_now::date)
               and (d.ends_on is null or d.ends_on >= vc.local_now::date)
-              and (
-                (
-                  ds.ends_at_venue_close = false
-                  and ds.day_of_week = vc.local_dow
-                  and vc.local_now::time >= ds.start_time
-                  and vc.local_now::time < ds.end_time
-                )
-                or
-                (
-                  ds.ends_at_venue_close = true
-                  and active_until_close.schedule_start_at is not null
-                )
-              )
+              and occurrence.schedule_start_at is not null
+              and occurrence_end.schedule_end_at is not null
+              and vc.local_now < occurrence_end.schedule_end_at
+          ),
+          ranked_deals as (
+            select
+              deal_occurrences.*,
+              row_number() over (
+                partition by deal_id
+                order by
+                  case availability when 'active_now' then 0 else 1 end,
+                  case when availability = 'later_today' then schedule_start_at end,
+                  day_of_week,
+                  start_time,
+                  end_time
+              ) as row_number
+            from deal_occurrences
           )
           select
             venue_id,
@@ -173,12 +174,18 @@ export const dealRoutes: FastifyPluginAsync<DealRoutesOptions> = async (app, opt
             deal_title,
             deal_description,
             distance_miles,
+            availability,
             day_of_week,
             start_time,
             end_time
           from ranked_deals
           where row_number = 1
-          order by distance_miles asc, venue_name asc, deal_title asc
+          order by
+            case availability when 'active_now' then 0 else 1 end,
+            case when availability = 'later_today' then schedule_start_at end asc,
+            distance_miles asc,
+            venue_name asc,
+            deal_title asc
         `,
         [
           parsed.value.lng,
@@ -205,6 +212,7 @@ export const dealRoutes: FastifyPluginAsync<DealRoutesOptions> = async (app, opt
             description: row.deal_description
           },
           distanceMiles: row.distance_miles,
+          availability: row.availability,
           schedule: {
             dayOfWeek: row.day_of_week,
             startTime: row.start_time,

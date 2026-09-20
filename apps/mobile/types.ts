@@ -12,8 +12,11 @@ export type NearbyDeal = {
   venue: Venue;
   deal: Deal;
   distanceMiles: number;
+  availability: DealAvailability;
   schedule: Schedule;
 };
+
+export type DealAvailability = 'active_now' | 'later_today';
 
 export type Venue = {
   id: string;

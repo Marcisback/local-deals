@@ -12,6 +12,8 @@ import { dealRoutes } from './deals.js';
 
 const BASE_LATITUDE = 37.3361;
 const BASE_LONGITUDE = -121.8896;
+const LA_SUNDAY_14_00 = new Date('2026-09-20T21:00:00.000Z');
+const LA_SUNDAY_15_00 = new Date('2026-09-20T22:00:00.000Z');
 const LA_SUNDAY_16_00 = new Date('2026-09-20T23:00:00.000Z');
 const LA_SUNDAY_17_00 = new Date('2026-09-21T00:00:00.000Z');
 const LA_SUNDAY_18_00 = new Date('2026-09-21T01:00:00.000Z');
@@ -23,6 +25,12 @@ type NearbyDealsResponse = {
   deals: Array<{
     venue: { id: string };
     deal: { id: string };
+    availability: 'active_now' | 'later_today';
+    schedule: {
+      dayOfWeek: number;
+      startTime: string;
+      endTime: string;
+    };
   }>;
 };
 
@@ -56,15 +64,26 @@ after(async () => {
   await fixturePool.end();
 });
 
-test('returns a verified deal at a verified venue', async () => {
+test('classifies a currently active verified deal as active_now', async () => {
   currentTime = LA_SUNDAY_17_00;
   const venueId = await createVenue();
   const dealId = await createDeal(venueId);
   await createFixedSchedule(dealId);
 
-  const dealIds = await getNearbyDealIds();
+  const deal = (await getNearbyDeals()).find((nearbyDeal) => nearbyDeal.deal.id === dealId);
 
-  assert.ok(dealIds.has(dealId));
+  assert.equal(deal?.availability, 'active_now');
+});
+
+test('classifies a deal starting later on the venue local date as later_today', async () => {
+  currentTime = LA_SUNDAY_15_00;
+  const venueId = await createVenue();
+  const dealId = await createDeal(venueId);
+  await createFixedSchedule(dealId);
+
+  const deal = (await getNearbyDeals()).find((nearbyDeal) => nearbyDeal.deal.id === dealId);
+
+  assert.equal(deal?.availability, 'later_today');
 });
 
 test('excludes a verified deal at an unverified venue', async () => {
@@ -113,13 +132,15 @@ test('evaluates schedules in each venue local timezone', async () => {
   const utcVenueId = await createVenue({ timezone: 'UTC' });
   const losAngelesDealId = await createDeal(losAngelesVenueId);
   const utcDealId = await createDeal(utcVenueId);
-  await createFixedSchedule(losAngelesDealId);
-  await createFixedSchedule(utcDealId);
+  await createFixedSchedule(losAngelesDealId, { startTime: '18:00', endTime: '19:00' });
+  await createFixedSchedule(utcDealId, { dayOfWeek: 1, startTime: '00:00', endTime: '01:00' });
 
-  const dealIds = await getNearbyDealIds();
+  const deals = await getNearbyDeals();
+  const losAngelesDeal = deals.find((deal) => deal.deal.id === losAngelesDealId);
+  const utcDeal = deals.find((deal) => deal.deal.id === utcDealId);
 
-  assert.ok(dealIds.has(losAngelesDealId));
-  assert.ok(!dealIds.has(utcDealId));
+  assert.equal(losAngelesDeal?.availability, 'later_today');
+  assert.equal(utcDeal?.availability, 'active_now');
 });
 
 test('includes the fixed schedule start and excludes its end boundary', async () => {
@@ -128,7 +149,8 @@ test('includes the fixed schedule start and excludes its end boundary', async ()
   await createFixedSchedule(dealId);
 
   currentTime = LA_SUNDAY_16_00;
-  assert.ok((await getNearbyDealIds()).has(dealId));
+  const dealAtStart = (await getNearbyDeals()).find((deal) => deal.deal.id === dealId);
+  assert.equal(dealAtStart?.availability, 'active_now');
 
   currentTime = LA_SUNDAY_18_00;
   assert.ok(!(await getNearbyDealIds()).has(dealId));
@@ -147,6 +169,19 @@ test('keeps an until-close deal active before closing and excludes the close bou
   assert.ok(!(await getNearbyDealIds()).has(dealId));
 });
 
+test('includes an until-close deal that starts later today', async () => {
+  currentTime = LA_SUNDAY_17_00;
+  const venueId = await createVenue();
+  const dealId = await createDeal(venueId);
+  await createVenueHours(venueId);
+  await createUntilCloseSchedule(dealId);
+
+  const deal = (await getNearbyDeals()).find((nearbyDeal) => nearbyDeal.deal.id === dealId);
+
+  assert.equal(deal?.availability, 'later_today');
+  assert.equal(deal?.schedule.endTime, '01:00:00');
+});
+
 test('keeps a previous-day until-close deal active after midnight', async () => {
   const venueId = await createVenue();
   const dealId = await createDeal(venueId);
@@ -154,9 +189,52 @@ test('keeps a previous-day until-close deal active after midnight', async () => 
   await createUntilCloseSchedule(dealId);
 
   currentTime = LA_MONDAY_00_30;
-  const dealIds = await getNearbyDealIds();
+  const deal = (await getNearbyDeals()).find((nearbyDeal) => nearbyDeal.deal.id === dealId);
 
-  assert.ok(dealIds.has(dealId));
+  assert.equal(deal?.availability, 'active_now');
+});
+
+test('orders active-now deals before later-today deals', async () => {
+  currentTime = LA_SUNDAY_17_00;
+  const venueId = await createVenue();
+  const activeDealId = await createDeal(venueId);
+  const laterDealId = await createDeal(venueId);
+  await createFixedSchedule(activeDealId);
+  await createFixedSchedule(laterDealId, { startTime: '19:00', endTime: '20:00' });
+
+  const dealIds = (await getNearbyDeals()).map((deal) => deal.deal.id);
+  const activeIndex = dealIds.indexOf(activeDealId);
+  const laterIndex = dealIds.indexOf(laterDealId);
+
+  assert.notEqual(activeIndex, -1);
+  assert.notEqual(laterIndex, -1);
+  assert.ok(activeIndex < laterIndex);
+});
+
+test('orders later-today deals by their local start time', async () => {
+  currentTime = LA_SUNDAY_14_00;
+  const venueId = await createVenue();
+  const earlierDealId = await createDeal(venueId);
+  const laterDealId = await createDeal(venueId);
+  await createFixedSchedule(earlierDealId, { startTime: '15:00', endTime: '16:00' });
+  await createFixedSchedule(laterDealId, { startTime: '19:00', endTime: '20:00' });
+
+  const dealIds = (await getNearbyDeals()).map((deal) => deal.deal.id);
+  const earlierIndex = dealIds.indexOf(earlierDealId);
+  const laterIndex = dealIds.indexOf(laterDealId);
+
+  assert.notEqual(earlierIndex, -1);
+  assert.notEqual(laterIndex, -1);
+  assert.ok(earlierIndex < laterIndex);
+});
+
+test('excludes deals that only occur tomorrow in the venue local timezone', async () => {
+  currentTime = LA_SUNDAY_17_00;
+  const venueId = await createVenue();
+  const dealId = await createDeal(venueId);
+  await createFixedSchedule(dealId, { dayOfWeek: 1, startTime: '09:00', endTime: '10:00' });
+
+  assert.ok(!(await getNearbyDealIds()).has(dealId));
 });
 
 async function createVenue(
@@ -240,7 +318,10 @@ async function createDeal(
   return dealId;
 }
 
-async function createFixedSchedule(dealId: string) {
+async function createFixedSchedule(
+  dealId: string,
+  options: { dayOfWeek?: number; startTime?: string; endTime?: string } = {}
+) {
   await fixturePool.query(
     `
       insert into public.deal_schedule_windows (
@@ -249,9 +330,9 @@ async function createFixedSchedule(dealId: string) {
         start_time,
         end_time,
         ends_at_venue_close
-      ) values ($1, 0, time '16:00', time '18:00', false)
+      ) values ($1, $2, $3::time, $4::time, false)
     `,
-    [dealId]
+    [dealId, options.dayOfWeek ?? 0, options.startTime ?? '16:00', options.endTime ?? '18:00']
   );
 }
 
@@ -286,6 +367,11 @@ async function createVenueHours(venueId: string) {
 }
 
 async function getNearbyDealIds(options: { radiusMiles?: number } = {}) {
+  const deals = await getNearbyDeals(options);
+  return new Set(deals.map((deal) => deal.deal.id));
+}
+
+async function getNearbyDeals(options: { radiusMiles?: number } = {}) {
   const response = await app.inject({
     method: 'GET',
     url: '/deals/nearby',
@@ -299,5 +385,5 @@ async function getNearbyDealIds(options: { radiusMiles?: number } = {}) {
   assert.equal(response.statusCode, 200, response.body);
 
   const body = response.json<NearbyDealsResponse>();
-  return new Set(body.deals.map((deal) => deal.deal.id));
+  return body.deals;
 }

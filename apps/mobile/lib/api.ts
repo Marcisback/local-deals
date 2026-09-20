@@ -67,7 +67,12 @@ function isNearbyDeal(value: unknown): value is NearbyDeal {
     return false;
   }
 
-  return isVenue(value.venue) && isDeal(value.deal) && isSchedule(value.schedule);
+  return (
+    isVenue(value.venue) &&
+    isDeal(value.deal) &&
+    (value.availability === 'active_now' || value.availability === 'later_today') &&
+    isSchedule(value.schedule)
+  );
 }
 
 function isVenue(value: unknown): value is Venue {
