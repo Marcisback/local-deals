@@ -1,7 +1,11 @@
 import type { FastifyPluginAsync } from 'fastify';
 
 import { isDuplicateCandidateError, parseCandidateInput } from '../../lib/candidate-input.js';
-import { createDealCandidate } from '../../lib/candidate-service.js';
+import {
+  createDealCandidate,
+  getDealCandidateById,
+  listPendingDealCandidates
+} from '../../lib/candidate-service.js';
 
 type DealCandidateRequestBody = {
   source?: {
@@ -21,6 +25,51 @@ type DealCandidateRequestBody = {
 };
 
 export const internalDealCandidateRoutes: FastifyPluginAsync = async (app) => {
+  app.get('/internal/deal-candidates', async (_request, reply) => {
+    try {
+      const candidates = await listPendingDealCandidates();
+      return { candidates };
+    } catch (error) {
+      app.log.error(
+        { failureType: error instanceof Error ? error.constructor.name : 'UnknownError' },
+        'Unable to list deal candidates'
+      );
+
+      return reply.code(500).send({
+        error: 'Unable to list deal candidates'
+      });
+    }
+  });
+
+  app.get<{ Params: { id: string } }>('/internal/deal-candidates/:id', async (request, reply) => {
+    if (!isUuid(request.params.id)) {
+      return reply.code(400).send({
+        error: 'Invalid candidate id'
+      });
+    }
+
+    try {
+      const candidate = await getDealCandidateById(request.params.id);
+
+      if (!candidate) {
+        return reply.code(404).send({
+          error: 'Deal candidate not found'
+        });
+      }
+
+      return { candidate };
+    } catch (error) {
+      app.log.error(
+        { failureType: error instanceof Error ? error.constructor.name : 'UnknownError' },
+        'Unable to load deal candidate'
+      );
+
+      return reply.code(500).send({
+        error: 'Unable to load deal candidate'
+      });
+    }
+  });
+
   app.post<{ Body: DealCandidateRequestBody }>('/internal/deal-candidates', async (request, reply) => {
     const parsed = parseCandidateInput(request.body);
 
@@ -60,3 +109,7 @@ export const internalDealCandidateRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 };
+
+function isUuid(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}

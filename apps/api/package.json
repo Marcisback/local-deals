@@ -7,7 +7,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
-    "test": "node --import tsx --test src/routes/deals.test.ts src/routes/internal/deal-candidates-extract.test.ts",
+    "test": "node --import tsx --test src/routes/deals.test.ts src/routes/internal/deal-candidates-extract.test.ts src/routes/internal/deal-candidates-review.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
