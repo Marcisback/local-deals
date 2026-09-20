@@ -24,7 +24,23 @@ const LA_MONDAY_01_00 = new Date('2026-09-21T08:00:00.000Z');
 type NearbyDealsResponse = {
   deals: Array<{
     venue: { id: string };
-    deal: { id: string };
+    deal: {
+      id: string;
+      items: Array<{
+        name: string;
+        category: string | null;
+        description: string | null;
+        dealPrice: number | null;
+        regularPrice: number | null;
+        discountText: string | null;
+      }>;
+      source: {
+        type: string;
+        url: string | null;
+        label: string | null;
+      } | null;
+      lastVerifiedAt: string | null;
+    };
     availability: 'active_now' | 'later_today';
     schedule: {
       dayOfWeek: number;
@@ -84,6 +100,80 @@ test('classifies a deal starting later on the venue local date as later_today', 
   const deal = (await getNearbyDeals()).find((nearbyDeal) => nearbyDeal.deal.id === dealId);
 
   assert.equal(deal?.availability, 'later_today');
+});
+
+test('returns structured deal items in display order', async () => {
+  currentTime = LA_SUNDAY_17_00;
+  const venueId = await createVenue();
+  const dealId = await createDeal(venueId);
+  await createFixedSchedule(dealId);
+  await createDealItem(dealId, {
+    name: 'Second item',
+    category: 'food',
+    dealPrice: 8,
+    regularPrice: 12,
+    sortOrder: 2
+  });
+  await createDealItem(dealId, {
+    name: 'First item',
+    description: 'A compact item description',
+    discountText: '$2 off',
+    sortOrder: 1
+  });
+
+  const deal = (await getNearbyDeals()).find((nearbyDeal) => nearbyDeal.deal.id === dealId);
+
+  assert.deepEqual(deal?.deal.items, [
+    {
+      name: 'First item',
+      category: null,
+      description: 'A compact item description',
+      dealPrice: null,
+      regularPrice: null,
+      discountText: '$2 off'
+    },
+    {
+      name: 'Second item',
+      category: 'food',
+      description: null,
+      dealPrice: 8,
+      regularPrice: 12,
+      discountText: null
+    }
+  ]);
+});
+
+test('returns an empty items array when a deal has no structured items', async () => {
+  currentTime = LA_SUNDAY_17_00;
+  const venueId = await createVenue();
+  const dealId = await createDeal(venueId);
+  await createFixedSchedule(dealId);
+
+  const deal = (await getNearbyDeals()).find((nearbyDeal) => nearbyDeal.deal.id === dealId);
+
+  assert.deepEqual(deal?.deal.items, []);
+});
+
+test('returns source provenance and the last verification timestamp', async () => {
+  currentTime = LA_SUNDAY_17_00;
+  const lastVerifiedAt = new Date('2026-09-19T18:30:00.000Z');
+  const venueId = await createVenue();
+  const dealId = await createDeal(venueId, { lastVerifiedAt });
+  await createFixedSchedule(dealId);
+  await createDealSource(dealId, {
+    type: 'official_website',
+    url: 'https://example.com/happy-hour',
+    label: 'Official happy hour menu'
+  });
+
+  const deal = (await getNearbyDeals()).find((nearbyDeal) => nearbyDeal.deal.id === dealId);
+
+  assert.deepEqual(deal?.deal.source, {
+    type: 'official_website',
+    url: 'https://example.com/happy-hour',
+    label: 'Official happy hour menu'
+  });
+  assert.equal(deal?.deal.lastVerifiedAt, lastVerifiedAt.toISOString());
 });
 
 test('excludes a verified deal at an unverified venue', async () => {
@@ -290,6 +380,7 @@ async function createDeal(
   options: {
     status?: 'active' | 'inactive';
     verificationStatus?: 'pending' | 'verified' | 'rejected' | 'stale';
+    lastVerifiedAt?: Date;
   } = {}
 ) {
   const dealId = randomUUID();
@@ -311,11 +402,67 @@ async function createDeal(
       `API test deal ${dealId}`,
       options.status ?? 'active',
       options.verificationStatus ?? 'verified',
-      options.verificationStatus === 'pending' ? null : LA_SUNDAY_17_00
+      options.verificationStatus === 'pending' ? null : (options.lastVerifiedAt ?? LA_SUNDAY_17_00)
     ]
   );
 
   return dealId;
+}
+
+async function createDealItem(
+  dealId: string,
+  options: {
+    name: string;
+    category?: string;
+    description?: string;
+    dealPrice?: number;
+    regularPrice?: number;
+    discountText?: string;
+    sortOrder?: number;
+  }
+) {
+  await fixturePool.query(
+    `
+      insert into public.deal_items (
+        deal_id,
+        name,
+        category,
+        description,
+        deal_price,
+        regular_price,
+        discount_text,
+        sort_order
+      ) values ($1, $2, $3, $4, $5, $6, $7, $8)
+    `,
+    [
+      dealId,
+      options.name,
+      options.category ?? null,
+      options.description ?? null,
+      options.dealPrice ?? null,
+      options.regularPrice ?? null,
+      options.discountText ?? null,
+      options.sortOrder ?? 0
+    ]
+  );
+}
+
+async function createDealSource(
+  dealId: string,
+  source: { type: string; url: string | null; label: string | null }
+) {
+  await fixturePool.query(
+    `
+      insert into public.deal_sources (
+        deal_id,
+        source_type,
+        source_url,
+        source_label,
+        last_checked_at
+      ) values ($1, $2, $3, $4, $5)
+    `,
+    [dealId, source.type, source.url, source.label, LA_SUNDAY_17_00]
+  );
 }
 
 async function createFixedSchedule(

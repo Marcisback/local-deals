@@ -30,7 +30,33 @@ export type Deal = {
   id: string;
   title: string;
   description: string | null;
+  items: DealItem[];
+  source: DealSource | null;
+  lastVerifiedAt: string | null;
 };
+
+export type DealItem = {
+  name: string;
+  category: string | null;
+  description: string | null;
+  dealPrice: number | null;
+  regularPrice: number | null;
+  discountText: string | null;
+};
+
+export type DealSource = {
+  type: DealSourceType;
+  url: string | null;
+  label: string | null;
+};
+
+export type DealSourceType =
+  | 'official_website'
+  | 'phone'
+  | 'business_submission'
+  | 'user_submission'
+  | 'manual'
+  | 'seed';
 
 export type Schedule = {
   dayOfWeek: number;

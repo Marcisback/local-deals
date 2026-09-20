@@ -29,11 +29,25 @@ type NearbyDealRow = {
   deal_id: string;
   deal_title: string;
   deal_description: string | null;
+  last_verified_at: Date | null;
+  items: DealItem[];
+  source_type: string | null;
+  source_url: string | null;
+  source_label: string | null;
   distance_miles: number;
   availability: 'active_now' | 'later_today';
   day_of_week: number;
   start_time: string;
   end_time: string;
+};
+
+type DealItem = {
+  name: string;
+  category: string | null;
+  description: string | null;
+  dealPrice: number | null;
+  regularPrice: number | null;
+  discountText: string | null;
 };
 
 export const dealRoutes: FastifyPluginAsync<DealRoutesOptions> = async (app, options) => {
@@ -88,6 +102,7 @@ export const dealRoutes: FastifyPluginAsync<DealRoutesOptions> = async (app, opt
               d.id as deal_id,
               d.title as deal_title,
               d.description as deal_description,
+              d.last_verified_at,
               round((st_distance(vc.location, vc.point) / $4::double precision)::numeric, 2)::double precision as distance_miles,
               case
                 when vc.local_now >= occurrence.schedule_start_at then 'active_now'
@@ -161,8 +176,13 @@ export const dealRoutes: FastifyPluginAsync<DealRoutesOptions> = async (app, opt
                   day_of_week,
                   start_time,
                   end_time
-              ) as row_number
+            ) as row_number
             from deal_occurrences
+          ),
+          selected_deals as (
+            select *
+            from ranked_deals
+            where row_number = 1
           )
           select
             venue_id,
@@ -173,13 +193,53 @@ export const dealRoutes: FastifyPluginAsync<DealRoutesOptions> = async (app, opt
             deal_id,
             deal_title,
             deal_description,
+            last_verified_at,
+            coalesce(deal_items.items, '[]'::jsonb) as items,
+            deal_source.source_type,
+            deal_source.source_url,
+            deal_source.source_label,
             distance_miles,
             availability,
             day_of_week,
             start_time,
             end_time
-          from ranked_deals
-          where row_number = 1
+          from selected_deals
+          left join lateral (
+            select jsonb_agg(
+              jsonb_build_object(
+                'name', di.name,
+                'category', di.category,
+                'description', di.description,
+                'dealPrice', di.deal_price,
+                'regularPrice', di.regular_price,
+                'discountText', di.discount_text
+              )
+              order by di.sort_order, di.name, di.id
+            ) as items
+            from public.deal_items di
+            where di.deal_id = selected_deals.deal_id
+          ) deal_items on true
+          left join lateral (
+            select
+              ds.source_type,
+              ds.source_url,
+              ds.source_label
+            from public.deal_sources ds
+            where ds.deal_id = selected_deals.deal_id
+            order by
+              exists (
+                select 1
+                from public.deal_verifications dv
+                where
+                  dv.source_id = ds.id
+                  and dv.deal_id = selected_deals.deal_id
+                  and dv.result = 'confirmed'
+              ) desc,
+              ds.last_checked_at desc nulls last,
+              ds.created_at desc,
+              ds.id
+            limit 1
+          ) deal_source on true
           order by
             case availability when 'active_now' then 0 else 1 end,
             case when availability = 'later_today' then schedule_start_at end asc,
@@ -209,7 +269,16 @@ export const dealRoutes: FastifyPluginAsync<DealRoutesOptions> = async (app, opt
           deal: {
             id: row.deal_id,
             title: row.deal_title,
-            description: row.deal_description
+            description: row.deal_description,
+            items: row.items,
+            source: row.source_type
+              ? {
+                  type: row.source_type,
+                  url: row.source_url,
+                  label: row.source_label
+                }
+              : null,
+            lastVerifiedAt: row.last_verified_at?.toISOString() ?? null
           },
           distanceMiles: row.distance_miles,
           availability: row.availability,

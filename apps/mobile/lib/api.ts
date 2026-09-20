@@ -1,4 +1,15 @@
-import type { Deal, NearbyDeal, NearbyDealsResponse, RadiusMiles, Schedule, Venue, VenueType } from '../types';
+import type {
+  Deal,
+  DealItem,
+  DealSource,
+  DealSourceType,
+  NearbyDeal,
+  NearbyDealsResponse,
+  RadiusMiles,
+  Schedule,
+  Venue,
+  VenueType
+} from '../types';
 
 export const DEFAULT_DISCOVERY_RADIUS_MILES: RadiusMiles = 25;
 
@@ -97,7 +108,49 @@ function isDeal(value: unknown): value is Deal {
   return (
     typeof value.id === 'string' &&
     typeof value.title === 'string' &&
-    (typeof value.description === 'string' || value.description === null)
+    (typeof value.description === 'string' || value.description === null) &&
+    Array.isArray(value.items) &&
+    value.items.every(isDealItem) &&
+    (value.source === null || isDealSource(value.source)) &&
+    (typeof value.lastVerifiedAt === 'string' || value.lastVerifiedAt === null)
+  );
+}
+
+function isDealItem(value: unknown): value is DealItem {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    typeof value.name === 'string' &&
+    (typeof value.category === 'string' || value.category === null) &&
+    (typeof value.description === 'string' || value.description === null) &&
+    (typeof value.dealPrice === 'number' || value.dealPrice === null) &&
+    (typeof value.regularPrice === 'number' || value.regularPrice === null) &&
+    (typeof value.discountText === 'string' || value.discountText === null)
+  );
+}
+
+function isDealSource(value: unknown): value is DealSource {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  return (
+    isDealSourceType(value.type) &&
+    (typeof value.url === 'string' || value.url === null) &&
+    (typeof value.label === 'string' || value.label === null)
+  );
+}
+
+function isDealSourceType(value: unknown): value is DealSourceType {
+  return (
+    value === 'official_website' ||
+    value === 'phone' ||
+    value === 'business_submission' ||
+    value === 'user_submission' ||
+    value === 'manual' ||
+    value === 'seed'
   );
 }
 
