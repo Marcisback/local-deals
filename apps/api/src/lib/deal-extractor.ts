@@ -94,6 +94,11 @@ export type ExtractedCandidate = {
   items: Array<Omit<ParsedCandidateItem, 'sortOrder'>>;
 };
 
+export type DealCandidateExtractor = (input: {
+  sourceType: CandidateSourceType;
+  content: string;
+}) => Promise<unknown>;
+
 export async function extractDealCandidateFromContent(input: {
   sourceType: CandidateSourceType;
   content: string;
@@ -163,7 +168,11 @@ export async function extractDealCandidateFromContent(input: {
     throw new ExtractionProviderError('OpenAI extraction returned invalid JSON.');
   }
 
-  const extraction = parseExtractedCandidate(parsed);
+  return validateExtractedCandidate(parsed);
+}
+
+export function validateExtractedCandidate(input: unknown): ExtractedCandidate {
+  const extraction = parseExtractedCandidate(input);
   if (!extraction.ok) {
     throw new InvalidExtractionError(extraction.error);
   }
@@ -181,6 +190,20 @@ function parseExtractedCandidate(input: unknown) {
   }
 
   const value = input as Record<string, unknown>;
+  if (
+    !hasOnlyKeys(value, [
+      'hasDeal',
+      'title',
+      'description',
+      'confidence',
+      'noDealReason',
+      'schedules',
+      'items'
+    ])
+  ) {
+    return invalid('Extraction output contains unexpected fields.');
+  }
+
   if (typeof value.hasDeal !== 'boolean') {
     return invalid('Extraction output is missing hasDeal.');
   }
@@ -215,6 +238,10 @@ function parseExtractedCandidate(input: unknown) {
     return items;
   }
 
+  if (!value.hasDeal && (schedules.value.length > 0 || items.value.length > 0)) {
+    return invalid('Extraction output without a deal must not contain schedules or items.');
+  }
+
   return {
     ok: true as const,
     value: {
@@ -242,6 +269,19 @@ function parseExtractedSchedules(input: unknown) {
     }
 
     const schedule = entry as Record<string, unknown>;
+    if (
+      !hasOnlyKeys(schedule, [
+        'dayOfWeek',
+        'startTime',
+        'endTime',
+        'endsAtVenueClose',
+        'rawScheduleText',
+        'confidence'
+      ])
+    ) {
+      return invalid('Extraction output schedule contains unexpected fields.');
+    }
+
     if (typeof schedule.dayOfWeek !== 'number' || !Number.isInteger(schedule.dayOfWeek) || schedule.dayOfWeek < 0 || schedule.dayOfWeek > 6) {
       return invalid('Extraction output contains invalid dayOfWeek.');
     }
@@ -258,6 +298,10 @@ function parseExtractedSchedules(input: unknown) {
 
     if (typeof schedule.endsAtVenueClose !== 'boolean') {
       return invalid('Extraction output contains invalid endsAtVenueClose.');
+    }
+
+    if (schedule.endsAtVenueClose && endTime.value !== null) {
+      return invalid('Extraction output until-close schedule must not contain endTime.');
     }
 
     const rawScheduleText = parseNullableString(schedule.rawScheduleText);
@@ -296,6 +340,20 @@ function parseExtractedItems(input: unknown) {
     }
 
     const item = entry as Record<string, unknown>;
+    if (
+      !hasOnlyKeys(item, [
+        'name',
+        'category',
+        'description',
+        'dealPrice',
+        'regularPrice',
+        'discountText',
+        'rawItemText',
+        'confidence'
+      ])
+    ) {
+      return invalid('Extraction output item contains unexpected fields.');
+    }
 
     const name = parseNullableString(item.name);
     if (!name.ok) {
@@ -305,6 +363,10 @@ function parseExtractedItems(input: unknown) {
     const category = parseNullableString(item.category);
     if (!category.ok) {
       return category;
+    }
+
+    if (category.value !== null && !['food', 'cocktail', 'beer', 'wine', 'other'].includes(category.value)) {
+      return invalid('Extraction output contains invalid item category.');
     }
 
     const description = parseNullableString(item.description);
@@ -399,6 +461,10 @@ function parseNullableTime(input: unknown) {
   }
 
   return { ok: true as const, value: input.trim() };
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowedKeys: string[]) {
+  return Object.keys(value).every((key) => allowedKeys.includes(key));
 }
 
 function invalid(error: string) {

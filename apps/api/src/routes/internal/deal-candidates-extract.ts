@@ -5,14 +5,16 @@ import {
   parseCandidateExtractionRequest,
   parseCandidateInput
 } from '../../lib/candidate-input.js';
-import { createDealCandidate, findExistingCandidateByExternalId } from '../../lib/candidate-service.js';
+import { createDealCandidate, findExistingCandidateByExternalId, venueExists } from '../../lib/candidate-service.js';
 import {
   extractDealCandidateFromContent,
   ExtractionConfigError,
   ExtractionProviderError,
   InvalidExtractionError,
-  NoDealFoundError
+  NoDealFoundError,
+  validateExtractedCandidate
 } from '../../lib/deal-extractor.js';
+import type { DealCandidateExtractor } from '../../lib/deal-extractor.js';
 
 const MAX_EXTRACTION_CONTENT_LENGTH = 20000;
 
@@ -27,7 +29,16 @@ type ExtractCandidateRequestBody = {
   content?: unknown;
 };
 
-export const internalDealCandidateExtractionRoutes: FastifyPluginAsync = async (app) => {
+type DealCandidateExtractionRoutesOptions = {
+  extractCandidate?: DealCandidateExtractor;
+};
+
+export const internalDealCandidateExtractionRoutes: FastifyPluginAsync<DealCandidateExtractionRoutesOptions> = async (
+  app,
+  options
+) => {
+  const extractCandidate = options.extractCandidate ?? extractDealCandidateFromContent;
+
   app.post<{ Body: ExtractCandidateRequestBody }>('/internal/deal-candidates/extract', async (request, reply) => {
     const parsedRequest = parseCandidateExtractionRequest(request.body, MAX_EXTRACTION_CONTENT_LENGTH);
 
@@ -37,29 +48,38 @@ export const internalDealCandidateExtractionRoutes: FastifyPluginAsync = async (
 
     const { source, venueId, content } = parsedRequest.value;
 
-    if (source.externalId) {
-      const existingCandidateId = await findExistingCandidateByExternalId(source.type, source.externalId);
-      if (existingCandidateId) {
-        return reply.code(409).send({
-          error: 'Candidate already exists for this source'
+    try {
+      if (venueId && !(await venueExists(venueId))) {
+        return reply.code(400).send({
+          error: 'Invalid request body: venueId'
         });
       }
-    }
 
-    app.log.info(
-      {
-        sourceType: source.type,
-        hasExternalId: source.externalId !== null,
-        contentLength: content.length
-      },
-      'Deal candidate extraction requested'
-    );
+      if (source.externalId) {
+        const existingCandidateId = await findExistingCandidateByExternalId(source.type, source.externalId);
+        if (existingCandidateId) {
+          return reply.code(409).send({
+            error: 'Candidate already exists for this source',
+            candidateId: existingCandidateId
+          });
+        }
+      }
 
-    try {
-      const extraction = await extractDealCandidateFromContent({
-        sourceType: source.type,
-        content
-      });
+      app.log.info(
+        {
+          sourceType: source.type,
+          hasExternalId: source.externalId !== null,
+          contentLength: content.length
+        },
+        'Deal candidate extraction requested'
+      );
+
+      const extraction = validateExtractedCandidate(
+        await extractCandidate({
+          sourceType: source.type,
+          content
+        })
+      );
 
       const parsedCandidate = parseCandidateInput({
         source,
@@ -118,13 +138,21 @@ export const internalDealCandidateExtractionRoutes: FastifyPluginAsync = async (
         },
         extraction: {
           title: extraction.title,
-          confidence: extraction.confidence
+          description: extraction.description,
+          confidence: extraction.confidence,
+          scheduleCount: extraction.schedules.length,
+          itemCount: extraction.items.length
         }
       });
     } catch (error) {
       if (isDuplicateCandidateError(error)) {
+        const existingCandidateId = source.externalId
+          ? await findExistingCandidateByExternalId(source.type, source.externalId)
+          : null;
+
         return reply.code(409).send({
-          error: 'Candidate already exists for this source'
+          error: 'Candidate already exists for this source',
+          candidateId: existingCandidateId
         });
       }
 
@@ -135,7 +163,7 @@ export const internalDealCandidateExtractionRoutes: FastifyPluginAsync = async (
       }
 
       if (error instanceof ExtractionConfigError) {
-        app.log.error({ err: error }, 'Deal extraction configuration is invalid');
+        app.log.error({ sourceType: source.type }, 'Deal extraction configuration is invalid');
         return reply.code(500).send({
           error: 'Deal extraction is not configured'
         });
@@ -144,7 +172,7 @@ export const internalDealCandidateExtractionRoutes: FastifyPluginAsync = async (
       if (error instanceof ExtractionProviderError || error instanceof InvalidExtractionError) {
         app.log.error(
           {
-            err: error,
+            failureType: error.constructor.name,
             sourceType: source.type,
             hasExternalId: source.externalId !== null
           },
@@ -156,7 +184,14 @@ export const internalDealCandidateExtractionRoutes: FastifyPluginAsync = async (
         });
       }
 
-      app.log.error({ err: error }, 'Unexpected deal extraction failure');
+      app.log.error(
+        {
+          failureType: error instanceof Error ? error.constructor.name : 'UnknownError',
+          sourceType: source.type,
+          hasExternalId: source.externalId !== null
+        },
+        'Unexpected deal extraction failure'
+      );
 
       return reply.code(500).send({
         error: 'Unable to create deal candidate'

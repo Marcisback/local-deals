@@ -32,6 +32,15 @@ export async function findExistingCandidateByExternalId(sourceType: CandidateSou
   return result.rows[0]?.id ?? null;
 }
 
+export async function venueExists(venueId: string) {
+  const result = await queryDatabase<{ exists: boolean }>(
+    'select exists(select 1 from public.venues where id = $1) as exists',
+    [venueId]
+  );
+
+  return result.rows[0]?.exists ?? false;
+}
+
 export async function createDealCandidate(input: ParsedCandidateInput): Promise<CreateCandidateResult> {
   return withDatabaseTransaction(async (client) => {
     if (input.venueId) {
