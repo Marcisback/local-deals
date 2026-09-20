@@ -21,12 +21,13 @@
 - Prefer Expo-supported APIs while the app remains Expo Go based.
 
 ## Development Environment
-- Primary development environment is Windows + WSL.
-- Use Linux/WSL shell syntax for commands.
-- Run Node and npm inside WSL.
+- Primary development environment is macOS.
+- Run Node, npm, Docker Desktop, and the Supabase CLI directly on macOS.
 - Physical iPhone testing uses Expo Go.
-- WSL LAN networking is unreliable for the physical device.
-- Default to `npx expo start --tunnel` for physical-device testing.
+- Prefer Expo's default LAN mode when the Mac and physical device are on the same network.
+- Use `npx expo start --tunnel` as a fallback when LAN discovery or connectivity is unavailable.
+- Set `EXPO_PUBLIC_API_URL` to the Mac's LAN address so Expo Go can reach the local API.
+- Local Supabase requires Docker Desktop to be installed and running.
 
 ## Expo / Mobile Rules
 - Use `npx expo install` for Expo and React Native packages when appropriate so versions remain SDK-compatible.
@@ -70,8 +71,8 @@
   - `npx expo install --check`
   - `npx expo-doctor`
   - `npx tsc --noEmit`
-- For runtime testing from WSL, instruct the user to run:
-  - `npx expo start --tunnel`
+- For physical-device runtime testing on macOS, start with `npm run mobile:start` in LAN mode.
+- If Expo Go cannot reach the Mac over LAN, use `npx expo start --tunnel` from `apps/mobile`.
 - Do not claim runtime validation succeeded unless the environment actually supported it.
 - Before finishing, inspect `git diff`, inspect `git status`, check for unintended files, and report checks that were performed or could not be performed.
 
@@ -94,10 +95,11 @@
 
 ## Current Product Development State
 - The mobile Expo bootstrap exists.
-- The mobile app currently renders a minimal Local Deals screen.
-- Foreground device location has been implemented.
-- Current location is retrieved once and coordinates are displayed for development.
-- Maps, reverse geocoding, backend, Supabase integration, authentication, real deals, and navigation are not implemented yet.
+- The mobile app retrieves foreground device location, reverse-geocodes it, and renders a nearby-deals feed from the API.
+- The API implements health checks, nearby deal discovery, and internal deal-candidate ingestion.
+- Supabase migrations and deterministic local seed data exist, including curated development fixtures.
+- Project-local Supabase configuration exists so the stack can be started reproducibly through the workspace CLI.
+- Maps, authentication, navigation, and production deployment are not implemented yet.
 
 ## Documentation Maintenance
 - Update this file when development environment assumptions change.
