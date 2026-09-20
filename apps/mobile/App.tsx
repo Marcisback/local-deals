@@ -61,7 +61,7 @@ export default function App() {
       </View>
 
       <View style={styles.feedHeader}>
-        <Text style={styles.feedTitle}>Nearby right now</Text>
+        <Text style={styles.feedTitle}>Nearby deals</Text>
       </View>
 
       <View style={styles.feedSection}>{dealsContent}</View>
@@ -166,7 +166,30 @@ function renderDealsContent(status: NearbyDealsStatus, deals: NearbyDeal[], erro
     );
   }
 
-  return deals.map((deal) => <DealCard key={deal.deal.id} deal={deal} />);
+  const activeDeals = deals.filter((deal) => deal.availability === 'active_now');
+  const laterDeals = deals.filter((deal) => deal.availability === 'later_today');
+
+  return (
+    <View>
+      {activeDeals.length > 0 ? (
+        <View style={styles.dealSection}>
+          <Text style={styles.dealSectionTitle}>Active now</Text>
+          {activeDeals.map((deal) => (
+            <DealCard key={deal.deal.id} deal={deal} />
+          ))}
+        </View>
+      ) : null}
+
+      {laterDeals.length > 0 ? (
+        <View style={[styles.dealSection, activeDeals.length > 0 ? styles.separatedDealSection : null]}>
+          <Text style={styles.dealSectionTitle}>Later today</Text>
+          {laterDeals.map((deal) => (
+            <DealCard key={deal.deal.id} deal={deal} />
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
 }
 
 const styles = StyleSheet.create({
@@ -238,6 +261,17 @@ const styles = StyleSheet.create({
   },
   feedSection: {
     paddingBottom: 12
+  },
+  dealSection: {
+    marginTop: 2
+  },
+  separatedDealSection: {
+    marginTop: 22
+  },
+  dealSectionTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#334155'
   },
   stateCard: {
     borderRadius: 22,

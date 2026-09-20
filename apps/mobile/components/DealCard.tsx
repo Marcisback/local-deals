@@ -1,6 +1,6 @@
 import { StyleSheet, Text, View } from 'react-native';
 
-import { formatTimeRange } from '../lib/formatTime';
+import { formatTimeRange, formatTimeValue } from '../lib/formatTime';
 import type { NearbyDeal } from '../types';
 
 type DealCardProps = {
@@ -21,9 +21,7 @@ export function DealCard({ deal }: DealCardProps) {
           <Text style={styles.distanceText}>{deal.distanceMiles.toFixed(1)} mi away</Text>
         </View>
 
-        <Text style={styles.timeText}>
-          {formatTimeRange(deal.schedule.startTime, deal.schedule.endTime)}
-        </Text>
+        <Text style={styles.timeText}>{formatScheduleLabel(deal)}</Text>
         <Text style={styles.locationText}>{formatVenueLocation(deal.venue.city, deal.venue.region)}</Text>
 
         {deal.deal.description ? (
@@ -34,6 +32,14 @@ export function DealCard({ deal }: DealCardProps) {
       </View>
     </View>
   );
+}
+
+function formatScheduleLabel(deal: NearbyDeal) {
+  if (deal.availability === 'later_today') {
+    return `Starts at ${formatTimeValue(deal.schedule.startTime)}`;
+  }
+
+  return formatTimeRange(deal.schedule.startTime, deal.schedule.endTime);
 }
 
 function formatVenueLocation(city: string | null, region: string | null) {

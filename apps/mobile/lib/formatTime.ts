@@ -2,7 +2,7 @@ export function formatTimeRange(startTime: string, endTime: string) {
   return `${formatTimeValue(startTime)} - ${formatTimeValue(endTime)}`;
 }
 
-function formatTimeValue(value: string) {
+export function formatTimeValue(value: string) {
   const parts = value.split(':');
 
   if (parts.length < 2) {
