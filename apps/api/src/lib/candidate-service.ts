@@ -1,4 +1,4 @@
-import type { QueryResultRow } from 'pg';
+import type { PoolClient, QueryResultRow } from 'pg';
 
 import { queryDatabase, withDatabaseTransaction } from '../db.js';
 import type { CandidateSourceType, ParsedCandidateInput } from './candidate-input.js';
@@ -15,6 +15,41 @@ type ReviewedCandidateRow = QueryResultRow & {
 
 type CandidateStatusRow = QueryResultRow & {
   review_status: 'pending' | 'approved' | 'rejected' | 'needs_review';
+};
+
+type PublicationCandidateRow = QueryResultRow & {
+  id: string;
+  venue_id: string | null;
+  venue_exists: boolean;
+  venue_is_verified: boolean | null;
+  source_url: string;
+  source_type: CandidateSourceType;
+  source_label: string | null;
+  discovered_at: Date;
+  source_last_checked_at: Date | null;
+  title: string | null;
+  description: string | null;
+  review_status: 'pending' | 'approved' | 'rejected' | 'needs_review';
+  review_notes: string | null;
+  reviewed_at: Date | null;
+  published_deal_id: string | null;
+};
+
+type PublicationScheduleRow = QueryResultRow & {
+  day_of_week: number;
+  start_time: string | null;
+  end_time: string | null;
+  ends_at_venue_close: boolean;
+};
+
+type PublicationItemRow = QueryResultRow & {
+  name: string | null;
+  category: string | null;
+  description: string | null;
+  deal_price: string | null;
+  regular_price: string | null;
+  discount_text: string | null;
+  sort_order: number;
 };
 
 type CandidateReviewRow = QueryResultRow & {
@@ -35,6 +70,8 @@ type CandidateReviewRow = QueryResultRow & {
   discovered_at: Date;
   created_at: Date;
   updated_at: Date;
+  published_deal_id: string | null;
+  published_at: Date | null;
   schedules: CandidateReviewSchedule[];
   items: CandidateReviewItem[];
 };
@@ -92,6 +129,26 @@ export type ReviewCandidateResult =
       kind: 'not_pending';
       candidateId: string;
       reviewStatus: 'approved' | 'rejected' | 'needs_review';
+    };
+
+export type PublishCandidateResult =
+  | {
+      kind: 'published' | 'already_published';
+      candidateId: string;
+      dealId: string;
+      scheduleCount: number;
+      itemCount: number;
+    }
+  | {
+      kind: 'not_found';
+    }
+  | {
+      kind: 'not_approved';
+      reviewStatus: 'pending' | 'rejected' | 'needs_review';
+    }
+  | {
+      kind: 'invalid_candidate';
+      reason: string;
     };
 
 export async function findExistingCandidateByExternalId(sourceType: CandidateSourceType, externalId: string) {
@@ -172,6 +229,264 @@ export async function reviewDealCandidate(
       kind: 'not_pending' as const,
       candidateId,
       reviewStatus: existingCandidate.review_status as 'approved' | 'rejected' | 'needs_review'
+    };
+  });
+}
+
+export async function publishDealCandidate(candidateId: string): Promise<PublishCandidateResult> {
+  return withDatabaseTransaction(async (client) => {
+    const candidateResult = await client.query<PublicationCandidateRow>(
+      `
+        select
+          c.id,
+          c.venue_id,
+          v.id is not null as venue_exists,
+          v.is_verified as venue_is_verified,
+          c.source_url,
+          c.source_type,
+          c.source_label,
+          c.discovered_at,
+          c.source_last_checked_at,
+          c.title,
+          c.description,
+          c.review_status,
+          c.review_notes,
+          c.reviewed_at,
+          c.published_deal_id
+        from public.deal_candidates c
+        left join public.venues v on v.id = c.venue_id
+        where c.id = $1
+        for update of c
+      `,
+      [candidateId]
+    );
+    const candidate = candidateResult.rows[0];
+
+    if (!candidate) {
+      return { kind: 'not_found' as const };
+    }
+
+    if (candidate.published_deal_id) {
+      const counts = await getPublishedDealCounts(client, candidate.published_deal_id);
+      return {
+        kind: 'already_published' as const,
+        candidateId,
+        dealId: candidate.published_deal_id,
+        ...counts
+      };
+    }
+
+    if (candidate.review_status !== 'approved') {
+      return {
+        kind: 'not_approved' as const,
+        reviewStatus: candidate.review_status as 'pending' | 'rejected' | 'needs_review'
+      };
+    }
+
+    if (!candidate.venue_id || !candidate.venue_exists) {
+      return {
+        kind: 'invalid_candidate' as const,
+        reason: 'Candidate must be linked to a valid venue'
+      };
+    }
+
+    if (!candidate.venue_is_verified) {
+      return {
+        kind: 'invalid_candidate' as const,
+        reason: 'Candidate venue must be verified'
+      };
+    }
+
+    const title = candidate.title?.trim();
+    if (!title) {
+      return {
+        kind: 'invalid_candidate' as const,
+        reason: 'Candidate title must be nonblank'
+      };
+    }
+
+    if (!candidate.reviewed_at) {
+      return {
+        kind: 'invalid_candidate' as const,
+        reason: 'Approved candidate is missing its review timestamp'
+      };
+    }
+
+    const scheduleResult = await client.query<PublicationScheduleRow>(
+      `
+        select day_of_week, start_time::text, end_time::text, ends_at_venue_close
+        from public.deal_candidate_schedule_windows
+        where candidate_id = $1
+        order by day_of_week, start_time nulls last, id
+      `,
+      [candidateId]
+    );
+    const schedules = scheduleResult.rows;
+
+    if (schedules.length === 0) {
+      return {
+        kind: 'invalid_candidate' as const,
+        reason: 'Candidate must contain at least one normalized schedule'
+      };
+    }
+
+    for (const schedule of schedules) {
+      if (
+        !schedule.start_time ||
+        (schedule.ends_at_venue_close && schedule.end_time !== null) ||
+        (!schedule.ends_at_venue_close &&
+          (!schedule.end_time || schedule.end_time <= schedule.start_time))
+      ) {
+        return {
+          kind: 'invalid_candidate' as const,
+          reason: 'Candidate contains an invalid or incomplete schedule'
+        };
+      }
+    }
+
+    const itemResult = await client.query<PublicationItemRow>(
+      `
+        select
+          name,
+          category,
+          description,
+          deal_price::text,
+          regular_price::text,
+          discount_text,
+          sort_order
+        from public.deal_candidate_items
+        where candidate_id = $1
+        order by sort_order, id
+      `,
+      [candidateId]
+    );
+    const items = itemResult.rows;
+
+    if (items.some((item) => !item.name?.trim())) {
+      return {
+        kind: 'invalid_candidate' as const,
+        reason: 'Candidate contains an item with a blank name'
+      };
+    }
+
+    const dealResult = await client.query<{ id: string }>(
+      `
+        insert into public.deals (
+          venue_id,
+          title,
+          description,
+          status,
+          starts_on,
+          ends_on,
+          verification_status,
+          last_verified_at
+        ) values ($1, $2, $3, 'active', null, null, 'verified', $4)
+        returning id
+      `,
+      [candidate.venue_id, title, candidate.description, candidate.reviewed_at]
+    );
+    const dealId = dealResult.rows[0].id;
+
+    for (const schedule of schedules) {
+      await client.query(
+        `
+          insert into public.deal_schedule_windows (
+            deal_id,
+            day_of_week,
+            start_time,
+            end_time,
+            ends_at_venue_close
+          ) values ($1, $2, $3, $4, $5)
+        `,
+        [dealId, schedule.day_of_week, schedule.start_time, schedule.end_time, schedule.ends_at_venue_close]
+      );
+    }
+
+    for (const item of items) {
+      await client.query(
+        `
+          insert into public.deal_items (
+            deal_id,
+            name,
+            category,
+            description,
+            deal_price,
+            regular_price,
+            discount_text,
+            sort_order
+          ) values ($1, $2, $3, $4, $5, $6, $7, $8)
+        `,
+        [
+          dealId,
+          item.name?.trim(),
+          item.category,
+          item.description,
+          item.deal_price,
+          item.regular_price,
+          item.discount_text,
+          item.sort_order
+        ]
+      );
+    }
+
+    const sourceResult = await client.query<{ id: string }>(
+      `
+        insert into public.deal_sources (
+          deal_id,
+          source_type,
+          source_url,
+          source_label,
+          discovered_at,
+          last_checked_at
+        ) values ($1, $2, $3, $4, $5, $6)
+        returning id
+      `,
+      [
+        dealId,
+        candidate.source_type,
+        candidate.source_url,
+        candidate.source_label,
+        candidate.discovered_at,
+        candidate.source_last_checked_at
+      ]
+    );
+    const sourceId = sourceResult.rows[0].id;
+
+    await client.query(
+      `
+        insert into public.deal_verifications (
+          deal_id,
+          source_id,
+          verification_method,
+          result,
+          notes,
+          verified_at
+        ) values ($1, $2, $3, 'confirmed', $4, $5)
+      `,
+      [
+        dealId,
+        sourceId,
+        getVerificationMethod(candidate.source_type),
+        candidate.review_notes,
+        candidate.reviewed_at
+      ]
+    );
+
+    await client.query(
+      `
+        update public.deal_candidates
+        set published_deal_id = $2, published_at = now()
+        where id = $1
+      `,
+      [candidateId, dealId]
+    );
+
+    return {
+      kind: 'published' as const,
+      candidateId,
+      dealId,
+      scheduleCount: schedules.length,
+      itemCount: items.length
     };
   });
 }
@@ -313,6 +628,8 @@ function queryCandidateReviews(candidateId: string | null) {
         c.discovered_at,
         c.created_at,
         c.updated_at,
+        c.published_deal_id,
+        c.published_at,
         coalesce((
           select jsonb_agg(
             jsonb_build_object(
@@ -393,6 +710,37 @@ function mapCandidateReviewRow(row: CandidateReviewRow) {
     })),
     discoveredAt: row.discovered_at.toISOString(),
     createdAt: row.created_at.toISOString(),
-    updatedAt: row.updated_at.toISOString()
+    updatedAt: row.updated_at.toISOString(),
+    publishedDealId: row.published_deal_id,
+    publishedAt: row.published_at?.toISOString() ?? null
   };
+}
+
+async function getPublishedDealCounts(client: PoolClient, dealId: string) {
+  const result = await client.query<{ schedule_count: number; item_count: number }>(
+    `
+      select
+        (select count(*)::int from public.deal_schedule_windows where deal_id = $1) as schedule_count,
+        (select count(*)::int from public.deal_items where deal_id = $1) as item_count
+    `,
+    [dealId]
+  );
+
+  return {
+    scheduleCount: result.rows[0].schedule_count,
+    itemCount: result.rows[0].item_count
+  };
+}
+
+function getVerificationMethod(sourceType: CandidateSourceType) {
+  switch (sourceType) {
+    case 'official_website':
+    case 'instagram':
+    case 'facebook':
+      return 'website';
+    case 'business_submission':
+      return 'business';
+    default:
+      return 'manual';
+  }
 }

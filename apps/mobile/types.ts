@@ -52,10 +52,13 @@ export type DealSource = {
 
 export type DealSourceType =
   | 'official_website'
+  | 'instagram'
+  | 'facebook'
   | 'phone'
   | 'business_submission'
   | 'user_submission'
   | 'manual'
+  | 'other'
   | 'seed';
 
 export type Schedule = {

@@ -146,10 +146,13 @@ function isDealSource(value: unknown): value is DealSource {
 function isDealSourceType(value: unknown): value is DealSourceType {
   return (
     value === 'official_website' ||
+    value === 'instagram' ||
+    value === 'facebook' ||
     value === 'phone' ||
     value === 'business_submission' ||
     value === 'user_submission' ||
     value === 'manual' ||
+    value === 'other' ||
     value === 'seed'
   );
 }

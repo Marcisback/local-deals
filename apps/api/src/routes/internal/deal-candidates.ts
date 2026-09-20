@@ -5,9 +5,10 @@ import {
   createDealCandidate,
   getDealCandidateById,
   listPendingDealCandidates,
+  publishDealCandidate,
   reviewDealCandidate
 } from '../../lib/candidate-service.js';
-import type { ReviewCandidateResult } from '../../lib/candidate-service.js';
+import type { PublishCandidateResult, ReviewCandidateResult } from '../../lib/candidate-service.js';
 
 type DealCandidateRequestBody = {
   source?: {
@@ -116,6 +117,28 @@ export const internalDealCandidateRoutes: FastifyPluginAsync = async (app) => {
     }
   );
 
+  app.post<{ Params: { id: string } }>('/internal/deal-candidates/:id/publish', async (request, reply) => {
+    if (!isUuid(request.params.id)) {
+      return reply.code(400).send({
+        error: 'Invalid candidate id'
+      });
+    }
+
+    try {
+      const result = await publishDealCandidate(request.params.id);
+      return sendPublicationResult(reply, result);
+    } catch (error) {
+      app.log.error(
+        { failureType: error instanceof Error ? error.constructor.name : 'UnknownError' },
+        'Unable to publish deal candidate'
+      );
+
+      return reply.code(500).send({
+        error: 'Unable to publish deal candidate'
+      });
+    }
+  });
+
   app.post<{ Body: DealCandidateRequestBody }>('/internal/deal-candidates', async (request, reply) => {
     const parsed = parseCandidateInput(request.body);
 
@@ -212,5 +235,35 @@ function sendReviewFailure(app: Parameters<FastifyPluginAsync>[0], reply: Fastif
 
   return reply.code(500).send({
     error: 'Unable to review deal candidate'
+  });
+}
+
+function sendPublicationResult(reply: FastifyReply, result: PublishCandidateResult) {
+  if (result.kind === 'not_found') {
+    return reply.code(404).send({
+      error: 'Deal candidate not found'
+    });
+  }
+
+  if (result.kind === 'not_approved') {
+    return reply.code(409).send({
+      error: 'Deal candidate must be approved before publication',
+      reviewStatus: result.reviewStatus
+    });
+  }
+
+  if (result.kind === 'invalid_candidate') {
+    return reply.code(422).send({
+      error: 'Deal candidate is not publishable',
+      reason: result.reason
+    });
+  }
+
+  return reply.code(result.kind === 'published' ? 201 : 200).send({
+    candidateId: result.candidateId,
+    dealId: result.dealId,
+    publicationStatus: result.kind === 'published' ? 'published' : 'already_published',
+    scheduleCount: result.scheduleCount,
+    itemCount: result.itemCount
   });
 }
