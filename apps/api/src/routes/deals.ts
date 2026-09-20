@@ -9,6 +9,10 @@ const ALLOWED_VENUE_TYPES = ['restaurant', 'bar', 'brewery', 'cafe'] as const;
 
 type VenueType = (typeof ALLOWED_VENUE_TYPES)[number];
 
+type DealRoutesOptions = {
+  now?: () => Date;
+};
+
 type NearbyDealsQuery = {
   lat?: string;
   lng?: string;
@@ -31,7 +35,7 @@ type NearbyDealRow = {
   end_time: string;
 };
 
-export const dealRoutes: FastifyPluginAsync = async (app) => {
+export const dealRoutes: FastifyPluginAsync<DealRoutesOptions> = async (app, options) => {
   app.get<{ Querystring: NearbyDealsQuery }>('/deals/nearby', async (request, reply) => {
     const parsed = parseNearbyDealsQuery(request.query);
 
@@ -44,7 +48,10 @@ export const dealRoutes: FastifyPluginAsync = async (app) => {
     try {
       const result = await queryDatabase<NearbyDealRow>(
         `
-          with user_location as (
+          with request_context as (
+            select coalesce($6::timestamptz, now()) as current_time
+          ),
+          user_location as (
             select
               st_setsrid(st_makepoint($1, $2), 4326)::geography as point,
               $3::double precision as radius_meters
@@ -59,14 +66,16 @@ export const dealRoutes: FastifyPluginAsync = async (app) => {
               v.location,
               v.timezone,
               v.status as venue_status,
+              v.is_verified as venue_is_verified,
               ul.point,
               ul.radius_meters,
-              timezone(v.timezone, now()) as local_now,
-              timezone(v.timezone, now())::date as local_date,
-              extract(dow from timezone(v.timezone, now()))::int as local_dow,
-              ((extract(dow from timezone(v.timezone, now()))::int + 6) % 7) as previous_dow
+              timezone(v.timezone, rc.current_time) as local_now,
+              timezone(v.timezone, rc.current_time)::date as local_date,
+              extract(dow from timezone(v.timezone, rc.current_time))::int as local_dow,
+              ((extract(dow from timezone(v.timezone, rc.current_time))::int + 6) % 7) as previous_dow
             from public.venues v
             cross join user_location ul
+            cross join request_context rc
           ),
           ranked_deals as (
             select
@@ -133,6 +142,7 @@ export const dealRoutes: FastifyPluginAsync = async (app) => {
             ) active_until_close on true
             where
               vc.venue_status = 'active'
+              and vc.venue_is_verified = true
               and d.status = 'active'
               and d.verification_status = 'verified'
               and st_dwithin(vc.location, vc.point, vc.radius_meters)
@@ -175,7 +185,8 @@ export const dealRoutes: FastifyPluginAsync = async (app) => {
           parsed.value.lat,
           parsed.value.radiusMiles * METERS_PER_MILE,
           METERS_PER_MILE,
-          parsed.value.venueType ?? null
+          parsed.value.venueType ?? null,
+          options.now?.() ?? null
         ]
       );
 
