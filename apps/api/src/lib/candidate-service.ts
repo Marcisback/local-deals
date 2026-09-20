@@ -7,6 +7,16 @@ type CreatedCandidateRow = QueryResultRow & {
   id: string;
 };
 
+type ReviewedCandidateRow = QueryResultRow & {
+  review_status: 'approved' | 'rejected';
+  review_notes: string | null;
+  reviewed_at: Date;
+};
+
+type CandidateStatusRow = QueryResultRow & {
+  review_status: 'pending' | 'approved' | 'rejected' | 'needs_review';
+};
+
 type CandidateReviewRow = QueryResultRow & {
   id: string;
   venue_id: string | null;
@@ -67,6 +77,23 @@ export type CreateCandidateResult =
       kind: 'invalid_venue';
     };
 
+export type ReviewCandidateResult =
+  | {
+      kind: 'reviewed';
+      candidateId: string;
+      reviewStatus: 'approved' | 'rejected';
+      reviewNote: string | null;
+      reviewedAt: string;
+    }
+  | {
+      kind: 'not_found';
+    }
+  | {
+      kind: 'not_pending';
+      candidateId: string;
+      reviewStatus: 'approved' | 'rejected' | 'needs_review';
+    };
+
 export async function findExistingCandidateByExternalId(sourceType: CandidateSourceType, externalId: string) {
   const result = await queryDatabase<{ id: string }>(
     `
@@ -99,6 +126,54 @@ export async function getDealCandidateById(candidateId: string): Promise<Candida
   const result = await queryCandidateReviews(candidateId);
   const row = result.rows[0];
   return row ? mapCandidateReviewRow(row) : null;
+}
+
+export async function reviewDealCandidate(
+  candidateId: string,
+  reviewStatus: 'approved' | 'rejected',
+  reviewNote: string | null
+): Promise<ReviewCandidateResult> {
+  return withDatabaseTransaction(async (client) => {
+    const updateResult = await client.query<ReviewedCandidateRow>(
+      `
+        update public.deal_candidates
+        set
+          review_status = $2,
+          review_notes = $3,
+          reviewed_at = now()
+        where id = $1 and review_status = 'pending'
+        returning review_status, review_notes, reviewed_at
+      `,
+      [candidateId, reviewStatus, reviewNote]
+    );
+    const reviewedCandidate = updateResult.rows[0];
+
+    if (reviewedCandidate) {
+      return {
+        kind: 'reviewed' as const,
+        candidateId,
+        reviewStatus: reviewedCandidate.review_status,
+        reviewNote: reviewedCandidate.review_notes,
+        reviewedAt: reviewedCandidate.reviewed_at.toISOString()
+      };
+    }
+
+    const existingResult = await client.query<CandidateStatusRow>(
+      'select review_status from public.deal_candidates where id = $1',
+      [candidateId]
+    );
+    const existingCandidate = existingResult.rows[0];
+
+    if (!existingCandidate) {
+      return { kind: 'not_found' as const };
+    }
+
+    return {
+      kind: 'not_pending' as const,
+      candidateId,
+      reviewStatus: existingCandidate.review_status as 'approved' | 'rejected' | 'needs_review'
+    };
+  });
 }
 
 export async function createDealCandidate(input: ParsedCandidateInput): Promise<CreateCandidateResult> {
