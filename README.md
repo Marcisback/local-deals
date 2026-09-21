@@ -5,24 +5,27 @@ Real-time local discovery for verified deals, specials, and things to do nearby.
 ## Project Structure
 
 - `apps/mobile` — React Native / Expo mobile application
-- `apps/api` — Application API
-- `packages/shared` — Shared TypeScript types, schemas, and constants
+- `apps/api` — Fastify application API
+- `apps/web` — Internal candidate review dashboard built with Vite
 - `supabase` — Database migrations, seed data, and Supabase configuration
-- `docs` — Product and system documentation
+
+`packages/shared` and `docs` are not currently present.
 
 ## Status
 
-Early development. The repository currently includes an Expo mobile discovery feed, a Fastify API, and a local Supabase/PostgreSQL schema with seed data.
+Early development. The repository currently includes an Expo mobile discovery feed, a Fastify API, a local Supabase/PostgreSQL database, AI-assisted candidate extraction, an internal review/publish workflow, and a local web review dashboard.
 
-## macOS Local Setup
+The unauthenticated `/internal/*` API routes and the web dashboard are intentionally local-development-only. Do not expose or deploy them until authentication and authorization are implemented.
+
+## Windows + WSL Local Setup
 
 Prerequisites:
 
-- Node.js and npm
-- Docker Desktop, installed and running
+- WSL with Node.js and npm installed inside the Linux distribution
+- Docker Desktop for Windows, installed and running with WSL integration enabled
 - Expo Go on a physical device for device testing
 
-Install workspace dependencies from the repository root:
+Run the following commands inside WSL from the repository root. Install workspace dependencies:
 
 ```sh
 npm install
@@ -34,13 +37,13 @@ Start the local Supabase stack. The project configuration applies the migrations
 npx supabase start
 ```
 
-Create the API environment file. Its default connection string targets the local Supabase database on port `54322`:
+Create the API environment file. Its default connection string targets the local Supabase database on port `54322`. Add `OPENAI_API_KEY` and `OPENAI_EXTRACTION_MODEL` when using AI extraction:
 
 ```sh
 cp apps/api/.env.example apps/api/.env
 ```
 
-Create the mobile environment file, then replace `YOUR_LAN_IP` with the Mac's LAN IP address so Expo Go can reach the API:
+Create the mobile environment file, then replace `YOUR_LAN_IP` with the Windows host's LAN IPv4 address so a physical device running Expo Go can reach the API:
 
 ```sh
 cp apps/mobile/.env.example apps/mobile/.env
@@ -52,17 +55,45 @@ Start the API from the repository root:
 npm run api:dev
 ```
 
-In another terminal, start Expo in its default LAN mode:
+In another WSL terminal, start the internal web dashboard:
+
+```sh
+npm run web:dev
+```
+
+Open the local review dashboard at [http://localhost:5173](http://localhost:5173). The Vite development server proxies its `/api` requests to the API at `http://127.0.0.1:3000`.
+
+In another WSL terminal, start Expo in its default LAN mode:
 
 ```sh
 npm run mobile:start
 ```
 
-If the physical device cannot connect over LAN, run `npx expo start --tunnel` from `apps/mobile` as a fallback.
+Ensure Windows Firewall and WSL networking allow the device to reach port `3000`. If Expo Go cannot discover the development server over LAN, run `npx expo start --tunnel` from `apps/mobile` as a fallback.
+
+## macOS (Supported Secondary Environment)
+
+The same setup is supported directly on macOS: install Node.js/npm and Docker Desktop, run the commands above in a macOS terminal, and use the Mac's LAN IPv4 address for `EXPO_PUBLIC_API_URL`. Expo Go LAN mode and the tunnel fallback work the same way.
+
+## Internal Review Workflow
+
+The local candidate pipeline is:
+
+```text
+raw source
+  -> AI extraction
+  -> pending candidate
+  -> venue linking
+  -> approve or reject
+  -> explicit publish (approved candidates only)
+  -> consumer discovery through /deals/nearby
+```
+
+Extraction validates normalized candidate data and writes it only to the candidate staging tables. New candidates remain `pending`. Venue linking associates a candidate with an existing venue, and reviewers then approve or reject it in the web dashboard. Approval changes review state only; publishing is a separate explicit action that creates the consumer-facing deal. Rejected and unpublished candidates never appear in consumer discovery.
 
 ## Local AI Deal Extraction
 
-The internal extraction endpoint sends supplied source text to the configured OpenAI model, validates the structured output, and writes only to the `deal_candidates`, `deal_candidate_schedule_windows`, and `deal_candidate_items` staging tables. Every new candidate remains `pending`; this workflow never creates or updates a published deal.
+The internal extraction endpoint sends supplied source text to the configured OpenAI model, validates the structured output, and writes only to the `deal_candidates`, `deal_candidate_schedule_windows`, and `deal_candidate_items` staging tables. Every new candidate remains `pending`; extraction itself never creates or updates a published deal.
 
 Set `OPENAI_API_KEY` and `OPENAI_EXTRACTION_MODEL` in `apps/api/.env`, then start the API with `npm run api:dev`. The configured model must support Structured Outputs through the Responses API.
 

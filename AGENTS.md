@@ -7,10 +7,10 @@
 ## Repository Architecture
 - This is an npm workspaces monorepo.
 - `apps/mobile` - React Native + Expo mobile application.
-- `apps/api` - backend API.
-- `packages/shared` - shared TypeScript types, schemas, constants, and utilities.
+- `apps/api` - Fastify backend API.
+- `apps/web` - Vite-based internal candidate review dashboard.
 - `supabase` - database migrations and Supabase configuration.
-- `docs` - product and technical documentation.
+- `packages/shared` and `docs` are not currently present; do not describe them as implemented.
 - Do not claim planned directories are implemented if they are empty or only reserved.
 
 ## Mobile Stack
@@ -21,12 +21,13 @@
 - Prefer Expo-supported APIs while the app remains Expo Go based.
 
 ## Development Environment
-- Primary development environment is macOS.
-- Run Node, npm, Docker Desktop, and the Supabase CLI directly on macOS.
+- Primary development environment is Windows with the repository and development commands running in WSL.
+- Run Node, npm, and the workspace Supabase CLI inside WSL. Run Docker Desktop on Windows with WSL integration enabled.
+- macOS remains a supported secondary environment; run Node, npm, Docker Desktop, and the workspace Supabase CLI directly on macOS.
 - Physical iPhone testing uses Expo Go.
-- Prefer Expo's default LAN mode when the Mac and physical device are on the same network.
+- Prefer Expo's default LAN mode when the development computer and physical device are on the same network.
 - Use `npx expo start --tunnel` as a fallback when LAN discovery or connectivity is unavailable.
-- Set `EXPO_PUBLIC_API_URL` to the Mac's LAN address so Expo Go can reach the local API.
+- Set `EXPO_PUBLIC_API_URL` to the development computer's LAN address so Expo Go can reach the API. On Windows + WSL, use the Windows host's LAN address and ensure the API port is reachable through WSL networking and Windows Firewall.
 - Local Supabase requires Docker Desktop to be installed and running.
 
 ## Expo / Mobile Rules
@@ -50,8 +51,7 @@
 - Handle user-denied permissions gracefully.
 - Do not silently swallow errors.
 - Avoid unnecessary dependencies.
-- Reuse shared types and utilities only when they genuinely belong in `packages/shared`.
-- Do not move code into shared packages prematurely.
+- Do not introduce `packages/shared` until cross-application contracts genuinely justify it.
 - Keep secrets and credentials out of source control.
 - Environment-specific secrets belong in ignored environment files.
 - Never commit `node_modules`.
@@ -71,8 +71,8 @@
   - `npx expo install --check`
   - `npx expo-doctor`
   - `npx tsc --noEmit`
-- For physical-device runtime testing on macOS, start with `npm run mobile:start` in LAN mode.
-- If Expo Go cannot reach the Mac over LAN, use `npx expo start --tunnel` from `apps/mobile`.
+- For physical-device runtime testing, start with `npm run mobile:start` in LAN mode.
+- If Expo Go cannot discover the development server over LAN, use `npx expo start --tunnel` from `apps/mobile`.
 - Do not claim runtime validation succeeded unless the environment actually supported it.
 - Before finishing, inspect `git diff`, inspect `git status`, check for unintended files, and report checks that were performed or could not be performed.
 
@@ -87,17 +87,21 @@
 
 ## Product Architecture Boundaries
 - Mobile: React Native + Expo.
-- Backend: dedicated API under `apps/api`.
-- Database: Supabase / PostgreSQL, with PostGIS planned for geographic queries.
-- Shared: `packages/shared` for genuinely cross-application TypeScript contracts.
-- Future web application may live under `apps/web`.
+- Backend: Fastify API under `apps/api`.
+- Web: internal candidate review dashboard under `apps/web`.
+- Database: Supabase / PostgreSQL with PostGIS-backed geographic queries.
+- Shared: no shared package is currently implemented; add one only for genuinely cross-application TypeScript contracts.
 - Mobile clients should not eventually contain privileged database or business logic that belongs in the backend.
+- All `/internal/*` API endpoints are currently unauthenticated and intentionally restricted to local development. They must remain local/dev-only and must not be exposed or deployed until authentication and authorization are implemented.
 
 ## Current Product Development State
-- The mobile Expo bootstrap exists.
-- The mobile app retrieves foreground device location, reverse-geocodes it, and renders a nearby-deals feed from the API.
-- The API implements health checks, nearby deal discovery, and internal deal-candidate ingestion.
-- Supabase migrations and deterministic local seed data exist, including curated development fixtures.
+- The Expo mobile app retrieves foreground device location, reverse-geocodes it, and renders the consumer nearby-deals discovery feed.
+- The Fastify API implements health checks, nearby deal discovery, AI-assisted candidate extraction, internal candidate management, review actions, venue linking, and explicit publication.
+- Supabase/PostgreSQL migrations and deterministic local seed data exist, including curated development fixtures and the candidate staging/publication schema.
+- The candidate workflow is implemented: raw source content is extracted into a pending candidate, linked to a venue, approved or rejected, and explicitly published before it can appear in consumer discovery.
+- `apps/web` is the internal dashboard for listing and inspecting candidates, linking venues, approving or rejecting candidates, and explicitly publishing approved candidates.
+- Approval does not publish a candidate; publication is a separate explicit action.
+- Internal API routes are local-development-only and unauthenticated until authentication and authorization are implemented.
 - Project-local Supabase configuration exists so the stack can be started reproducibly through the workspace CLI.
 - Maps, authentication, navigation, and production deployment are not implemented yet.
 
