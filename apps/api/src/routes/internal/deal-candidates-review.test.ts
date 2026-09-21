@@ -23,6 +23,11 @@ const fixturePool = new Pool({ connectionString });
 const venueId = randomUUID();
 const pendingCandidateId = randomUUID();
 const rejectedCandidateId = randomUUID();
+const approvedCandidateId = randomUUID();
+const publishedCandidateId = randomUUID();
+const venueAssignmentCandidateId = randomUUID();
+const invalidVenueCandidateId = randomUUID();
+const productionDealId = randomUUID();
 const scheduleId = randomUUID();
 const itemId = randomUUID();
 
@@ -37,8 +42,16 @@ before(async () => {
 
 after(async () => {
   await fixturePool.query('delete from public.deal_candidates where id = any($1::uuid[])', [
-    [pendingCandidateId, rejectedCandidateId]
+    [
+      pendingCandidateId,
+      rejectedCandidateId,
+      approvedCandidateId,
+      publishedCandidateId,
+      venueAssignmentCandidateId,
+      invalidVenueCandidateId
+    ]
   ]);
+  await fixturePool.query('delete from public.deals where id = $1', [productionDealId]);
   await fixturePool.query('delete from public.venues where id = $1', [venueId]);
   await app.close();
   await closeDatabasePool();
@@ -59,6 +72,42 @@ test('lists pending candidates and excludes other review states', async () => {
   assert.ok(!body.candidates.some((candidate) => candidate.id === rejectedCandidateId));
 });
 
+test('lists pending, approved, rejected, and published candidates in separate categories', async () => {
+  const expectedCandidates = new Map([
+    ['pending', pendingCandidateId],
+    ['approved', approvedCandidateId],
+    ['rejected', rejectedCandidateId],
+    ['published', publishedCandidateId]
+  ]);
+
+  for (const [status, expectedCandidateId] of expectedCandidates) {
+    const response = await app.inject({
+      method: 'GET',
+      url: `/internal/deal-candidates?status=${status}`
+    });
+
+    assert.equal(response.statusCode, 200, response.body);
+    const candidateIds = response
+      .json<{ candidates: Array<{ id: string }> }>()
+      .candidates.map((candidate) => candidate.id);
+    assert.ok(candidateIds.includes(expectedCandidateId), `${status} list should include its fixture`);
+
+    if (status === 'approved') {
+      assert.ok(!candidateIds.includes(publishedCandidateId), 'published candidates should leave approved');
+    }
+  }
+});
+
+test('rejects an unsupported candidate list status', async () => {
+  const response = await app.inject({
+    method: 'GET',
+    url: '/internal/deal-candidates?status=unknown'
+  });
+
+  assert.equal(response.statusCode, 400, response.body);
+  assert.deepEqual(response.json(), { error: 'Invalid candidate status' });
+});
+
 test('retrieves one candidate with source, venue, evidence, and timestamps', async () => {
   const response = await app.inject({
     method: 'GET',
@@ -77,7 +126,7 @@ test('retrieves one candidate with source, venue, evidence, and timestamps', asy
         publishedAt: string | null;
         lastCheckedAt: string | null;
       };
-      venue: { id: string; name: string } | null;
+      venue: { id: string; name: string; isVerified: boolean } | null;
       title: string | null;
       description: string | null;
       rawText: string | null;
@@ -100,7 +149,8 @@ test('retrieves one candidate with source, venue, evidence, and timestamps', asy
   });
   assert.deepEqual(candidate.venue, {
     id: venueId,
-    name: 'Candidate review test venue'
+    name: 'Candidate review test venue',
+    isVerified: true
   });
   assert.equal(candidate.title, 'Review fixture happy hour');
   assert.equal(candidate.description, 'A staged candidate for read-only review.');
@@ -110,6 +160,99 @@ test('retrieves one candidate with source, venue, evidence, and timestamps', asy
   assert.equal(candidate.discoveredAt, CREATED_AT.toISOString());
   assert.equal(candidate.createdAt, CREATED_AT.toISOString());
   assert.equal(candidate.updatedAt, CREATED_AT.toISOString());
+});
+
+test('lists existing venues with verification state', async () => {
+  const response = await app.inject({
+    method: 'GET',
+    url: '/internal/venues?query=Candidate%20review'
+  });
+
+  assert.equal(response.statusCode, 200, response.body);
+  const venue = response
+    .json<{
+      venues: Array<{ id: string; name: string; isVerified: boolean }>;
+    }>()
+    .venues.find((candidateVenue) => candidateVenue.id === venueId);
+  assert.deepEqual(venue, {
+    id: venueId,
+    name: 'Candidate review test venue',
+    venueType: 'restaurant',
+    city: null,
+    region: null,
+    isVerified: true,
+    status: 'active'
+  });
+});
+
+test('assigns a valid venue and returns it in candidate detail', async () => {
+  const productionDealBefore = await fixturePool.query(
+    'select id, venue_id, title from public.deals where id = $1',
+    [productionDealId]
+  );
+  const assignmentResponse = await app.inject({
+    method: 'PATCH',
+    url: `/internal/deal-candidates/${venueAssignmentCandidateId}/venue`,
+    payload: { venueId }
+  });
+
+  assert.equal(assignmentResponse.statusCode, 200, assignmentResponse.body);
+  assert.deepEqual(assignmentResponse.json(), {
+    candidate: {
+      id: venueAssignmentCandidateId,
+      venue: {
+        id: venueId,
+        name: 'Candidate review test venue',
+        isVerified: true
+      }
+    }
+  });
+
+  const detailResponse = await app.inject({
+    method: 'GET',
+    url: `/internal/deal-candidates/${venueAssignmentCandidateId}`
+  });
+  assert.equal(detailResponse.statusCode, 200, detailResponse.body);
+  assert.deepEqual(
+    detailResponse.json<{ candidate: { venue: unknown } }>().candidate.venue,
+    assignmentResponse.json<{ candidate: { venue: unknown } }>().candidate.venue
+  );
+
+  const productionDealAfter = await fixturePool.query(
+    'select id, venue_id, title from public.deals where id = $1',
+    [productionDealId]
+  );
+  assert.deepEqual(productionDealAfter.rows, productionDealBefore.rows);
+});
+
+test('rejects a missing or malformed venue without changing the candidate', async () => {
+  for (const invalidVenueId of [randomUUID(), 'not-a-uuid']) {
+    const response = await app.inject({
+      method: 'PATCH',
+      url: `/internal/deal-candidates/${invalidVenueCandidateId}/venue`,
+      payload: { venueId: invalidVenueId }
+    });
+
+    assert.equal(response.statusCode, 400, response.body);
+    assert.deepEqual(response.json(), { error: 'Invalid request body: venueId' });
+  }
+
+  const result = await fixturePool.query<{ venue_id: string | null }>(
+    'select venue_id from public.deal_candidates where id = $1',
+    [invalidVenueCandidateId]
+  );
+  assert.equal(result.rows[0].venue_id, null);
+});
+
+test('does not allow a published candidate venue link to change', async () => {
+  const response = await app.inject({
+    method: 'PATCH',
+    url: `/internal/deal-candidates/${publishedCandidateId}/venue`,
+    payload: { venueId }
+  });
+
+  assert.equal(response.statusCode, 409, response.body);
+  assert.deepEqual(response.json(), { error: 'Published candidate venue cannot be changed' });
 });
 
 test('returns not found for an unknown candidate id', async () => {
@@ -191,6 +334,14 @@ async function createFixtures() {
 
   await fixturePool.query(
     `
+      insert into public.deals (id, venue_id, title, status)
+      values ($1, $2, 'Published review fixture', 'active')
+    `,
+    [productionDealId, venueId]
+  );
+
+  await fixturePool.query(
+    `
       insert into public.deal_candidates (
         id,
         venue_id,
@@ -220,6 +371,26 @@ async function createFixtures() {
           $7, null, 'https://example.com/rejected-fixture', 'manual',
           null, $8, 'Rejected fixture', null, null,
           $4, null, $6, 'rejected', null, $4, $4
+        ),
+        (
+          $9, $2, 'https://example.com/approved-fixture', 'manual',
+          null, $10, 'Approved fixture', null, null,
+          $4, null, $6, 'approved', 0.8, $4, $4
+        ),
+        (
+          $11, $2, 'https://example.com/published-fixture', 'manual',
+          null, $12, 'Published fixture', null, null,
+          $4, null, $6, 'approved', 0.9, $4, $4
+        ),
+        (
+          $13, null, 'https://example.com/venue-assignment-fixture', 'manual',
+          null, $14, 'Venue assignment fixture', null, null,
+          $4, null, $6, 'approved', 0.7, $4, $4
+        ),
+        (
+          $15, null, 'https://example.com/invalid-venue-fixture', 'manual',
+          null, $16, 'Invalid venue fixture', null, null,
+          $4, null, $6, 'pending', 0.7, $4, $4
         )
     `,
     [
@@ -230,8 +401,25 @@ async function createFixtures() {
       PUBLISHED_AT,
       CHECKED_AT,
       rejectedCandidateId,
-      `review-fixture-${rejectedCandidateId}`
+      `review-fixture-${rejectedCandidateId}`,
+      approvedCandidateId,
+      `review-fixture-${approvedCandidateId}`,
+      publishedCandidateId,
+      `review-fixture-${publishedCandidateId}`,
+      venueAssignmentCandidateId,
+      `review-fixture-${venueAssignmentCandidateId}`,
+      invalidVenueCandidateId,
+      `review-fixture-${invalidVenueCandidateId}`
     ]
+  );
+
+  await fixturePool.query(
+    `
+      update public.deal_candidates
+      set published_deal_id = $2, published_at = $3
+      where id = $1
+    `,
+    [publishedCandidateId, productionDealId, CREATED_AT]
   );
 
   await fixturePool.query(

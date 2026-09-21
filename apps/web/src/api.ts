@@ -1,4 +1,4 @@
-import type { DealCandidate, PublicationResult } from './types';
+import type { CandidateListStatus, DealCandidate, InternalVenue, PublicationResult } from './types';
 
 const configuredBaseUrl = import.meta.env.VITE_INTERNAL_API_URL?.trim() || '/api';
 const apiBaseUrl = configuredBaseUrl.replace(/\/$/, '');
@@ -10,9 +10,18 @@ export class ApiError extends Error {
   }
 }
 
-export async function listPendingCandidates() {
-  const response = await request<{ candidates: DealCandidate[] }>('/internal/deal-candidates');
+export async function listCandidates(status: CandidateListStatus) {
+  const response = await request<{ candidates: DealCandidate[] }>(
+    `/internal/deal-candidates?status=${encodeURIComponent(status)}`
+  );
   return response.candidates;
+}
+
+export async function listVenues(query = '') {
+  const response = await request<{ venues: InternalVenue[] }>(
+    `/internal/venues?query=${encodeURIComponent(query)}`
+  );
+  return response.venues;
 }
 
 export async function getCandidate(candidateId: string) {
@@ -33,6 +42,14 @@ export async function rejectCandidate(candidateId: string, reviewNote: string) {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ reviewNote: reviewNote.trim() || null })
+  });
+}
+
+export async function assignCandidateVenue(candidateId: string, venueId: string) {
+  await request(`/internal/deal-candidates/${encodeURIComponent(candidateId)}/venue`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ venueId })
   });
 }
 

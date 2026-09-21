@@ -2,13 +2,19 @@ import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 
 import { isDuplicateCandidateError, parseCandidateInput } from '../../lib/candidate-input.js';
 import {
+  assignCandidateVenue,
   createDealCandidate,
   getDealCandidateById,
-  listPendingDealCandidates,
+  listDealCandidates,
+  listInternalVenues,
   publishDealCandidate,
   reviewDealCandidate
 } from '../../lib/candidate-service.js';
-import type { PublishCandidateResult, ReviewCandidateResult } from '../../lib/candidate-service.js';
+import type {
+  CandidateListStatus,
+  PublishCandidateResult,
+  ReviewCandidateResult
+} from '../../lib/candidate-service.js';
 
 type DealCandidateRequestBody = {
   source?: {
@@ -31,10 +37,23 @@ type RejectCandidateRequestBody = {
   reviewNote?: unknown;
 };
 
+type AssignVenueRequestBody = {
+  venueId?: unknown;
+};
+
+const candidateListStatuses = new Set<CandidateListStatus>(['pending', 'approved', 'rejected', 'published']);
+
 export const internalDealCandidateRoutes: FastifyPluginAsync = async (app) => {
-  app.get('/internal/deal-candidates', async (_request, reply) => {
+  app.get<{ Querystring: { status?: string } }>('/internal/deal-candidates', async (request, reply) => {
+    const status = parseCandidateListStatus(request.query.status);
+    if (!status) {
+      return reply.code(400).send({
+        error: 'Invalid candidate status'
+      });
+    }
+
     try {
-      const candidates = await listPendingDealCandidates();
+      const candidates = await listDealCandidates(status);
       return { candidates };
     } catch (error) {
       app.log.error(
@@ -44,6 +63,29 @@ export const internalDealCandidateRoutes: FastifyPluginAsync = async (app) => {
 
       return reply.code(500).send({
         error: 'Unable to list deal candidates'
+      });
+    }
+  });
+
+  app.get<{ Querystring: { query?: string } }>('/internal/venues', async (request, reply) => {
+    const search = request.query.query?.trim() ?? '';
+    if (search.length > 100) {
+      return reply.code(400).send({
+        error: 'Invalid venue search query'
+      });
+    }
+
+    try {
+      const venues = await listInternalVenues(search);
+      return { venues };
+    } catch (error) {
+      app.log.error(
+        { failureType: error instanceof Error ? error.constructor.name : 'UnknownError' },
+        'Unable to list venues'
+      );
+
+      return reply.code(500).send({
+        error: 'Unable to list venues'
       });
     }
   });
@@ -139,6 +181,55 @@ export const internalDealCandidateRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
+  app.patch<{ Params: { id: string }; Body: AssignVenueRequestBody }>(
+    '/internal/deal-candidates/:id/venue',
+    async (request, reply) => {
+      if (!isUuid(request.params.id)) {
+        return reply.code(400).send({
+          error: 'Invalid candidate id'
+        });
+      }
+
+      if (typeof request.body?.venueId !== 'string' || !isUuid(request.body.venueId)) {
+        return reply.code(400).send({
+          error: 'Invalid request body: venueId'
+        });
+      }
+
+      try {
+        const result = await assignCandidateVenue(request.params.id, request.body.venueId);
+
+        if (result.kind === 'not_found') {
+          return reply.code(404).send({ error: 'Deal candidate not found' });
+        }
+
+        if (result.kind === 'invalid_venue') {
+          return reply.code(400).send({ error: 'Invalid request body: venueId' });
+        }
+
+        if (result.kind === 'already_published') {
+          return reply.code(409).send({ error: 'Published candidate venue cannot be changed' });
+        }
+
+        return {
+          candidate: {
+            id: request.params.id,
+            venue: result.venue
+          }
+        };
+      } catch (error) {
+        app.log.error(
+          { failureType: error instanceof Error ? error.constructor.name : 'UnknownError' },
+          'Unable to assign candidate venue'
+        );
+
+        return reply.code(500).send({
+          error: 'Unable to assign candidate venue'
+        });
+      }
+    }
+  );
+
   app.post<{ Body: DealCandidateRequestBody }>('/internal/deal-candidates', async (request, reply) => {
     const parsed = parseCandidateInput(request.body);
 
@@ -181,6 +272,14 @@ export const internalDealCandidateRoutes: FastifyPluginAsync = async (app) => {
 
 function isUuid(value: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function parseCandidateListStatus(value: string | undefined): CandidateListStatus | null {
+  if (value === undefined) {
+    return 'pending';
+  }
+
+  return candidateListStatuses.has(value as CandidateListStatus) ? (value as CandidateListStatus) : null;
 }
 
 function parseReviewNote(value: unknown) {

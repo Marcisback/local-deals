@@ -152,13 +152,20 @@ test('rejects a malformed candidate id', async () => {
   assert.deepEqual(response.json(), { error: 'Invalid candidate id' });
 });
 
-test('reviewed candidates leave the pending list', async () => {
-  const candidateId = await createCandidate();
-  assert.ok((await getPendingCandidateIds()).has(candidateId));
+test('review actions move candidates into the matching dashboard category', async () => {
+  const approvedCandidateId = await createCandidate();
+  const rejectedCandidateId = await createCandidate();
+  assert.ok((await getCandidateIds('pending')).has(approvedCandidateId));
+  assert.ok((await getCandidateIds('pending')).has(rejectedCandidateId));
 
-  assert.equal((await reviewCandidate(candidateId, 'approve')).statusCode, 200);
+  assert.equal((await reviewCandidate(approvedCandidateId, 'approve')).statusCode, 200);
+  assert.equal((await reviewCandidate(rejectedCandidateId, 'reject')).statusCode, 200);
 
-  assert.ok(!(await getPendingCandidateIds()).has(candidateId));
+  const pendingIds = await getCandidateIds('pending');
+  assert.ok(!pendingIds.has(approvedCandidateId));
+  assert.ok(!pendingIds.has(rejectedCandidateId));
+  assert.ok((await getCandidateIds('approved')).has(approvedCandidateId));
+  assert.ok((await getCandidateIds('rejected')).has(rejectedCandidateId));
 });
 
 test('review actions do not create or update production deals', async () => {
@@ -229,10 +236,10 @@ async function getStoredReview(candidateId: string) {
   return result.rows[0];
 }
 
-async function getPendingCandidateIds() {
+async function getCandidateIds(status: 'pending' | 'approved' | 'rejected') {
   const response = await app.inject({
     method: 'GET',
-    url: '/internal/deal-candidates'
+    url: `/internal/deal-candidates?status=${status}`
   });
   assert.equal(response.statusCode, 200, response.body);
 

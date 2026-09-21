@@ -56,6 +56,7 @@ type CandidateReviewRow = QueryResultRow & {
   id: string;
   venue_id: string | null;
   venue_name: string | null;
+  venue_is_verified: boolean | null;
   source_url: string;
   source_type: CandidateSourceType;
   source_label: string | null;
@@ -74,6 +75,20 @@ type CandidateReviewRow = QueryResultRow & {
   published_at: Date | null;
   schedules: CandidateReviewSchedule[];
   items: CandidateReviewItem[];
+};
+
+type InternalVenueRow = QueryResultRow & {
+  id: string;
+  name: string;
+  venue_type: string;
+  city: string | null;
+  region: string | null;
+  is_verified: boolean;
+  status: string;
+};
+
+type CandidateVenueStateRow = QueryResultRow & {
+  published_deal_id: string | null;
 };
 
 type CandidateReviewSchedule = {
@@ -102,6 +117,7 @@ type CandidateReviewItem = {
 };
 
 export type CandidateReview = ReturnType<typeof mapCandidateReviewRow>;
+export type CandidateListStatus = 'pending' | 'approved' | 'rejected' | 'published';
 
 export type CreateCandidateResult =
   | {
@@ -151,6 +167,19 @@ export type PublishCandidateResult =
       reason: string;
     };
 
+export type AssignCandidateVenueResult =
+  | {
+      kind: 'assigned';
+      venue: {
+        id: string;
+        name: string;
+        isVerified: boolean;
+      };
+    }
+  | { kind: 'not_found' }
+  | { kind: 'invalid_venue' }
+  | { kind: 'already_published' };
+
 export async function findExistingCandidateByExternalId(sourceType: CandidateSourceType, externalId: string) {
   const result = await queryDatabase<{ id: string }>(
     `
@@ -174,15 +203,88 @@ export async function venueExists(venueId: string) {
   return result.rows[0]?.exists ?? false;
 }
 
-export async function listPendingDealCandidates(): Promise<CandidateReview[]> {
-  const result = await queryCandidateReviews(null);
+export async function listDealCandidates(status: CandidateListStatus = 'pending'): Promise<CandidateReview[]> {
+  const result = await queryCandidateReviews(null, status);
   return result.rows.map(mapCandidateReviewRow);
 }
 
 export async function getDealCandidateById(candidateId: string): Promise<CandidateReview | null> {
-  const result = await queryCandidateReviews(candidateId);
+  const result = await queryCandidateReviews(candidateId, 'pending');
   const row = result.rows[0];
   return row ? mapCandidateReviewRow(row) : null;
+}
+
+export async function listInternalVenues(search: string) {
+  const result = await queryDatabase<InternalVenueRow>(
+    `
+      select id, name, venue_type, city, region, is_verified, status
+      from public.venues
+      where
+        $1 = ''
+        or name ilike '%' || $1 || '%'
+        or coalesce(city, '') ilike '%' || $1 || '%'
+        or coalesce(region, '') ilike '%' || $1 || '%'
+      order by is_verified desc, name, id
+      limit 50
+    `,
+    [search]
+  );
+
+  return result.rows.map((venue) => ({
+    id: venue.id,
+    name: venue.name,
+    venueType: venue.venue_type,
+    city: venue.city,
+    region: venue.region,
+    isVerified: venue.is_verified,
+    status: venue.status
+  }));
+}
+
+export async function assignCandidateVenue(
+  candidateId: string,
+  venueId: string
+): Promise<AssignCandidateVenueResult> {
+  return withDatabaseTransaction(async (client) => {
+    const candidateResult = await client.query<CandidateVenueStateRow>(
+      'select published_deal_id from public.deal_candidates where id = $1 for update',
+      [candidateId]
+    );
+    const candidate = candidateResult.rows[0];
+
+    if (!candidate) {
+      return { kind: 'not_found' as const };
+    }
+
+    if (candidate.published_deal_id) {
+      return { kind: 'already_published' as const };
+    }
+
+    const venueResult = await client.query<InternalVenueRow>(
+      `
+        select id, name, venue_type, city, region, is_verified, status
+        from public.venues
+        where id = $1
+      `,
+      [venueId]
+    );
+    const venue = venueResult.rows[0];
+
+    if (!venue) {
+      return { kind: 'invalid_venue' as const };
+    }
+
+    await client.query('update public.deal_candidates set venue_id = $2 where id = $1', [candidateId, venueId]);
+
+    return {
+      kind: 'assigned' as const,
+      venue: {
+        id: venue.id,
+        name: venue.name,
+        isVerified: venue.is_verified
+      }
+    };
+  });
 }
 
 export async function reviewDealCandidate(
@@ -607,13 +709,14 @@ export async function createDealCandidate(input: ParsedCandidateInput): Promise<
   });
 }
 
-function queryCandidateReviews(candidateId: string | null) {
+function queryCandidateReviews(candidateId: string | null, status: CandidateListStatus) {
   return queryDatabase<CandidateReviewRow>(
     `
       select
         c.id,
         c.venue_id,
         v.name as venue_name,
+        v.is_verified as venue_is_verified,
         c.source_url,
         c.source_type,
         c.source_label,
@@ -670,11 +773,18 @@ function queryCandidateReviews(candidateId: string | null) {
       from public.deal_candidates c
       left join public.venues v on v.id = c.venue_id
       where
-        ($1::uuid is null and c.review_status = 'pending')
-        or c.id = $1::uuid
+        ($1::uuid is not null and c.id = $1::uuid)
+        or (
+          $1::uuid is null
+          and (
+            ($2 = 'published' and c.published_deal_id is not null)
+            or ($2 = 'approved' and c.review_status = 'approved' and c.published_deal_id is null)
+            or ($2 in ('pending', 'rejected') and c.review_status = $2 and c.published_deal_id is null)
+          )
+        )
       order by c.created_at desc, c.id
     `,
-    [candidateId]
+    [candidateId, status]
   );
 }
 
@@ -692,7 +802,8 @@ function mapCandidateReviewRow(row: CandidateReviewRow) {
     venue: row.venue_id
       ? {
           id: row.venue_id,
-          name: row.venue_name
+          name: row.venue_name,
+          isVerified: row.venue_is_verified ?? false
         }
       : null,
     title: row.title,

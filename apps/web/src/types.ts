@@ -1,4 +1,15 @@
 export type ReviewStatus = 'pending' | 'approved' | 'rejected' | 'needs_review';
+export type CandidateListStatus = 'pending' | 'approved' | 'published' | 'rejected';
+
+export type InternalVenue = {
+  id: string;
+  name: string;
+  venueType: string;
+  city: string | null;
+  region: string | null;
+  isVerified: boolean;
+  status: string;
+};
 
 export type CandidateSchedule = {
   id: string;
@@ -38,6 +49,7 @@ export type DealCandidate = {
   venue: {
     id: string;
     name: string | null;
+    isVerified: boolean;
   } | null;
   title: string | null;
   description: string | null;
