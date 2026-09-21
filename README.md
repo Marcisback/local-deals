@@ -97,6 +97,28 @@ The internal extraction endpoint sends supplied source text to the configured Op
 
 Set `OPENAI_API_KEY` and `OPENAI_EXTRACTION_MODEL` in `apps/api/.env`, then start the API with `npm run api:dev`. The configured model must support Structured Outputs through the Responses API.
 
+To fetch and extract a public restaurant deal page server-side, submit its URL to the local URL extraction endpoint:
+
+```sh
+curl --fail-with-body \
+  --request POST \
+  --header 'Content-Type: application/json' \
+  --data @- \
+  http://127.0.0.1:3000/internal/deal-candidates/extract-url <<'JSON'
+{
+  "source": {
+    "type": "official_website",
+    "url": "https://example.com/happy-hour",
+    "externalId": "example-url-happy-hour-2026-09-20",
+    "label": "Official happy hour page"
+  },
+  "venueId": null
+}
+JSON
+```
+
+The API accepts only public HTTP(S) HTML destinations, applies redirect and response-size limits, removes common page boilerplate, and caps extracted text before invoking the existing model extraction and candidate staging flow. The resulting candidate remains pending until it is reviewed and explicitly published.
+
 Submit source content from another terminal:
 
 ```sh

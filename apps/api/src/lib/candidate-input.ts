@@ -169,6 +169,39 @@ export function parseCandidateInput(input: unknown) {
 }
 
 export function parseCandidateExtractionRequest(input: unknown, maxContentLength: number) {
+  const parsedBase = parseCandidateExtractionBase(input);
+  if (!parsedBase.ok) {
+    return parsedBase;
+  }
+
+  const body = input as { content?: unknown };
+  if (typeof body.content !== 'string') {
+    return invalid('Invalid request body: content');
+  }
+
+  const content = body.content.trim();
+  if (content === '') {
+    return invalid('Invalid request body: content');
+  }
+
+  if (content.length > maxContentLength) {
+    return invalid('Invalid request body: content');
+  }
+
+  return {
+    ok: true as const,
+    value: {
+      ...parsedBase.value,
+      content
+    }
+  };
+}
+
+export function parseCandidateUrlExtractionRequest(input: unknown) {
+  return parseCandidateExtractionBase(input);
+}
+
+function parseCandidateExtractionBase(input: unknown) {
   if (!input || typeof input !== 'object') {
     return invalid('Invalid request body');
   }
@@ -176,7 +209,6 @@ export function parseCandidateExtractionRequest(input: unknown, maxContentLength
   const body = input as {
     source?: { type?: unknown; url?: unknown; externalId?: unknown; label?: unknown };
     venueId?: unknown;
-    content?: unknown;
   };
 
   const source = body.source;
@@ -209,19 +241,6 @@ export function parseCandidateExtractionRequest(input: unknown, maxContentLength
     return venueId;
   }
 
-  if (typeof body.content !== 'string') {
-    return invalid('Invalid request body: content');
-  }
-
-  const content = body.content.trim();
-  if (content === '') {
-    return invalid('Invalid request body: content');
-  }
-
-  if (content.length > maxContentLength) {
-    return invalid('Invalid request body: content');
-  }
-
   return {
     ok: true as const,
     value: {
@@ -231,8 +250,7 @@ export function parseCandidateExtractionRequest(input: unknown, maxContentLength
         externalId: sourceExternalId.value,
         label: sourceLabel.value
       },
-      venueId: venueId.value,
-      content
+      venueId: venueId.value
     }
   };
 }
