@@ -97,6 +97,44 @@ The internal extraction endpoint sends supplied source text to the configured Op
 
 Set `OPENAI_API_KEY` and `OPENAI_EXTRACTION_MODEL` in `apps/api/.env`, then start the API with `npm run api:dev`. The configured model must support Structured Outputs through the Responses API.
 
+### Source collectors
+
+The general ingestion path selects a collector by source type before rejoining the existing extraction and review pipeline:
+
+```text
+source URL
+  -> source-type collector
+  -> normalized CollectedSource evidence
+  -> GPT structured extraction
+  -> pending candidate
+  -> human review
+  -> explicit publish
+```
+
+The website collector wraps the secure server-side HTML fetch and useful-text extraction described below. The Instagram collector accepts public post and reel URLs, canonicalizes them, and is ready to consume caption and public metadata through an `InstagramSourceProvider` boundary. No production Instagram provider or vendor credentials are configured yet, and Instagram collection does not fall back to HTML scraping; local requests return `501 Source collector is not configured` until a provider implementation is supplied.
+
+Supported Instagram URL shapes are `https://www.instagram.com/p/<shortcode>/` and `https://www.instagram.com/reel/<shortcode>/`. The collector also accepts the non-`www` host, removes query strings and fragments, and derives the candidate external ID from the shortcode. Profiles, stories, explore/login pages, and unrelated Instagram paths are rejected.
+
+Once an Instagram provider is configured, submit a source through the general endpoint:
+
+```sh
+curl --fail-with-body \
+  --request POST \
+  --header 'Content-Type: application/json' \
+  --data @- \
+  http://127.0.0.1:3000/internal/deal-candidates/extract-source <<'JSON'
+{
+  "source": {
+    "type": "instagram",
+    "url": "https://www.instagram.com/p/ABC123/",
+    "externalId": null,
+    "label": null
+  },
+  "venueId": null
+}
+JSON
+```
+
 To fetch and extract a public restaurant deal page server-side, submit its URL to the local URL extraction endpoint:
 
 ```sh

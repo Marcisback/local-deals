@@ -71,6 +71,7 @@ export type ExtractionRequest = {
     url: string;
     externalId: string | null;
     label: string | null;
+    publishedAt: string | null;
   };
   venueId: string | null;
   content: string;
@@ -207,7 +208,7 @@ function parseCandidateExtractionBase(input: unknown) {
   }
 
   const body = input as {
-    source?: { type?: unknown; url?: unknown; externalId?: unknown; label?: unknown };
+    source?: { type?: unknown; url?: unknown; externalId?: unknown; label?: unknown; publishedAt?: unknown };
     venueId?: unknown;
   };
 
@@ -236,6 +237,11 @@ function parseCandidateExtractionBase(input: unknown) {
     return sourceLabel;
   }
 
+  const sourcePublishedAt = parseOptionalTimestamp(source.publishedAt, 'source.publishedAt');
+  if (!sourcePublishedAt.ok) {
+    return sourcePublishedAt;
+  }
+
   const venueId = parseOptionalUuid(body.venueId, 'venueId');
   if (!venueId.ok) {
     return venueId;
@@ -248,7 +254,8 @@ function parseCandidateExtractionBase(input: unknown) {
         type: sourceType.value,
         url: sourceUrl.value,
         externalId: sourceExternalId.value,
-        label: sourceLabel.value
+        label: sourceLabel.value,
+        publishedAt: sourcePublishedAt.value
       },
       venueId: venueId.value
     }

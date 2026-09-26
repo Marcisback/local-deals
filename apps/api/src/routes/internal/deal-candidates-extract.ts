@@ -18,7 +18,21 @@ import {
   NoDealFoundError,
   type DealCandidateExtractor
 } from '../../lib/deal-extractor.js';
-import { extractUsefulTextFromHtml } from '../../lib/html-to-text.js';
+import {
+  InstagramSourceCollector,
+  type InstagramSourceProvider
+} from '../../lib/instagram-source-collector.js';
+import {
+  MAX_COLLECTED_SOURCE_TEXT_LENGTH,
+  selectSourceCollector,
+  SourceCollectionContentError,
+  SourceCollectorConfigurationError,
+  SourceProviderError,
+  UnsupportedSourceCollectorError,
+  UnsupportedSourceUrlError,
+  type CollectedSource,
+  type SourceCollector
+} from '../../lib/source-collector.js';
 import {
   fetchSourcePage,
   NonHtmlSourceError,
@@ -29,8 +43,9 @@ import {
   UnsafeSourceUrlError,
   type SourcePageFetcher
 } from '../../lib/source-fetcher.js';
+import { WebsiteSourceCollector } from '../../lib/website-source-collector.js';
 
-const MAX_EXTRACTION_CONTENT_LENGTH = 20_000;
+const MAX_EXTRACTION_CONTENT_LENGTH = MAX_COLLECTED_SOURCE_TEXT_LENGTH;
 
 type ExtractCandidateRequestBody = {
   source?: {
@@ -38,6 +53,7 @@ type ExtractCandidateRequestBody = {
     url?: unknown;
     externalId?: unknown;
     label?: unknown;
+    publishedAt?: unknown;
   };
   venueId?: unknown;
   content?: unknown;
@@ -48,9 +64,9 @@ type ExtractUrlCandidateRequestBody = Omit<ExtractCandidateRequestBody, 'content
 type DealCandidateExtractionRoutesOptions = {
   extractCandidate?: DealCandidateExtractor;
   fetchSource?: SourcePageFetcher;
+  instagramProvider?: InstagramSourceProvider;
+  sourceCollectors?: SourceCollector[];
 };
-
-class EmptySourceTextError extends Error {}
 
 export const internalDealCandidateExtractionRoutes: FastifyPluginAsync<DealCandidateExtractionRoutesOptions> = async (
   app,
@@ -58,6 +74,11 @@ export const internalDealCandidateExtractionRoutes: FastifyPluginAsync<DealCandi
 ) => {
   const extractCandidate = options.extractCandidate;
   const fetchSource = options.fetchSource ?? fetchSourcePage;
+  const websiteCollector = new WebsiteSourceCollector(fetchSource, MAX_EXTRACTION_CONTENT_LENGTH);
+  const sourceCollectors = options.sourceCollectors ?? [
+    websiteCollector,
+    new InstagramSourceCollector(options.instagramProvider)
+  ];
 
   app.post<{ Body: ExtractCandidateRequestBody }>('/internal/deal-candidates/extract', async (request, reply) => {
     const parsedRequest = parseCandidateExtractionRequest(request.body, MAX_EXTRACTION_CONTENT_LENGTH);
@@ -89,13 +110,8 @@ export const internalDealCandidateExtractionRoutes: FastifyPluginAsync<DealCandi
 
       try {
         await validateCandidateExtractionTarget(source, venueId);
-        const fetched = await fetchSource(source.url);
-        const content = extractUsefulTextFromHtml(fetched.html, MAX_EXTRACTION_CONTENT_LENGTH);
-        if (!content) {
-          throw new EmptySourceTextError('Source page did not contain useful text.');
-        }
-
-        const input: ExtractionRequest = { source, venueId, content };
+        const collected = await websiteCollector.collect({ source });
+        const input: ExtractionRequest = { source, venueId, content: collected.text };
         logExtractionRequest(app, input, 'URL deal candidate extraction requested');
         const result = await extractAndStageCandidate(input, extractCandidate, true);
         logExtractionSuccess(app, input, result.candidate);
@@ -104,14 +120,55 @@ export const internalDealCandidateExtractionRoutes: FastifyPluginAsync<DealCandi
           ...createExtractionResponse(result),
           source: {
             url: source.url,
-            responseBytes: fetched.responseBytes,
-            extractedTextCharacterCount: content.length
+            responseBytes: collected.responseBytes,
+            extractedTextCharacterCount: collected.text.length
           }
         });
       } catch (error) {
-        const fetchFailure = sendSourceFetchFailure(reply, error);
-        if (fetchFailure) {
-          return fetchFailure;
+        const collectionFailure = sendCollectionFailure(reply, error);
+        if (collectionFailure) {
+          return collectionFailure;
+        }
+
+        return sendExtractionFailure(app, reply, { source, venueId, content: '' }, error);
+      }
+    }
+  );
+
+  app.post<{ Body: ExtractUrlCandidateRequestBody }>(
+    '/internal/deal-candidates/extract-source',
+    async (request, reply) => {
+      const parsedRequest = parseCandidateUrlExtractionRequest(request.body);
+      if (!parsedRequest.ok) {
+        return reply.code(400).send({ error: parsedRequest.error });
+      }
+
+      const { source, venueId } = parsedRequest.value;
+
+      try {
+        const collector = selectSourceCollector(sourceCollectors, source.type);
+        const collected = await collector.collect({ source });
+        const input = createCollectedExtractionRequest(collected, venueId);
+        logExtractionRequest(app, input, 'Collected source deal candidate extraction requested');
+        const result = await extractAndStageCandidate(input, extractCandidate);
+        logExtractionSuccess(app, input, result.candidate);
+
+        return reply.code(201).send({
+          ...createExtractionResponse(result),
+          source: {
+            type: collected.sourceType,
+            url: collected.canonicalUrl,
+            externalId: collected.externalId,
+            label: collected.label,
+            publishedAt: collected.publishedAt,
+            extractedTextCharacterCount: input.content.length,
+            metadata: collected.metadata
+          }
+        });
+      } catch (error) {
+        const collectionFailure = sendCollectionFailure(reply, error);
+        if (collectionFailure) {
+          return collectionFailure;
         }
 
         return sendExtractionFailure(app, reply, { source, venueId, content: '' }, error);
@@ -119,6 +176,28 @@ export const internalDealCandidateExtractionRoutes: FastifyPluginAsync<DealCandi
     }
   );
 };
+
+function createCollectedExtractionRequest(
+  collected: CollectedSource,
+  venueId: string | null
+): ExtractionRequest {
+  const content = collected.text.trim().slice(0, MAX_EXTRACTION_CONTENT_LENGTH);
+  if (!content) {
+    throw new SourceCollectionContentError('Collected source did not contain useful text.');
+  }
+
+  return {
+    source: {
+      type: collected.sourceType,
+      url: collected.canonicalUrl,
+      externalId: collected.externalId,
+      label: collected.label,
+      publishedAt: collected.publishedAt
+    },
+    venueId,
+    content
+  };
+}
 
 function createExtractionResponse(result: Awaited<ReturnType<typeof extractAndStageCandidate>>) {
   return {
@@ -159,8 +238,31 @@ function sendSourceFetchFailure(reply: FastifyReply, error: unknown) {
     return reply.code(502).send({ error: 'Unable to fetch source page' });
   }
 
-  if (error instanceof EmptySourceTextError) {
-    return reply.code(422).send({ error: 'Source page did not contain useful text' });
+  return null;
+}
+
+function sendCollectionFailure(reply: FastifyReply, error: unknown) {
+  const fetchFailure = sendSourceFetchFailure(reply, error);
+  if (fetchFailure) return fetchFailure;
+
+  if (error instanceof UnsupportedSourceCollectorError) {
+    return reply.code(400).send({ error: 'Source type is not supported for collection' });
+  }
+
+  if (error instanceof UnsupportedSourceUrlError) {
+    return reply.code(400).send({ error: 'Source URL is not supported for this source type' });
+  }
+
+  if (error instanceof SourceCollectionContentError) {
+    return reply.code(422).send({ error: 'Collected source did not contain useful text' });
+  }
+
+  if (error instanceof SourceCollectorConfigurationError) {
+    return reply.code(501).send({ error: 'Source collector is not configured' });
+  }
+
+  if (error instanceof SourceProviderError) {
+    return reply.code(502).send({ error: 'Unable to collect source' });
   }
 
   return null;
