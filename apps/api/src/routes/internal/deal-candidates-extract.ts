@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyPluginAsync, FastifyReply } from 'fastify';
 
 import {
+  createCollectedExtractionRequest,
   DuplicateCandidateSourceError,
   extractAndStageCandidate,
   InvalidCandidateVenueError,
@@ -30,7 +31,6 @@ import {
   SourceProviderError,
   UnsupportedSourceCollectorError,
   UnsupportedSourceUrlError,
-  type CollectedSource,
   type SourceCollector
 } from '../../lib/source-collector.js';
 import {
@@ -176,28 +176,6 @@ export const internalDealCandidateExtractionRoutes: FastifyPluginAsync<DealCandi
     }
   );
 };
-
-function createCollectedExtractionRequest(
-  collected: CollectedSource,
-  venueId: string | null
-): ExtractionRequest {
-  const content = collected.text.trim().slice(0, MAX_EXTRACTION_CONTENT_LENGTH);
-  if (!content) {
-    throw new SourceCollectionContentError('Collected source did not contain useful text.');
-  }
-
-  return {
-    source: {
-      type: collected.sourceType,
-      url: collected.canonicalUrl,
-      externalId: collected.externalId,
-      label: collected.label,
-      publishedAt: collected.publishedAt
-    },
-    venueId,
-    content
-  };
-}
 
 function createExtractionResponse(result: Awaited<ReturnType<typeof extractAndStageCandidate>>) {
   return {

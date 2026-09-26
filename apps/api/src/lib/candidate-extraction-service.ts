@@ -14,6 +14,11 @@ import {
   validateExtractedCandidate,
   type DealCandidateExtractor
 } from './deal-extractor.js';
+import {
+  MAX_COLLECTED_SOURCE_TEXT_LENGTH,
+  SourceCollectionContentError,
+  type CollectedSource
+} from './source-collector.js';
 
 export class DuplicateCandidateSourceError extends Error {
   constructor(readonly candidateId: string | null) {
@@ -22,6 +27,28 @@ export class DuplicateCandidateSourceError extends Error {
 }
 
 export class InvalidCandidateVenueError extends Error {}
+
+export function createCollectedExtractionRequest(
+  collected: CollectedSource,
+  venueId: string | null
+): ExtractionRequest {
+  const content = collected.text.trim().slice(0, MAX_COLLECTED_SOURCE_TEXT_LENGTH);
+  if (!content) {
+    throw new SourceCollectionContentError('Collected source did not contain useful text.');
+  }
+
+  return {
+    source: {
+      type: collected.sourceType,
+      url: collected.canonicalUrl,
+      externalId: collected.externalId,
+      label: collected.label,
+      publishedAt: collected.publishedAt
+    },
+    venueId,
+    content
+  };
+}
 
 export async function extractAndStageCandidate(
   input: ExtractionRequest,

@@ -157,6 +157,26 @@ JSON
 
 The API accepts only public HTTP(S) HTML destinations, applies redirect and response-size limits, removes common page boilerplate, and caps extracted text before invoking the existing model extraction and candidate staging flow. The resulting candidate remains pending until it is reviewed and explicitly published.
 
+### Persistent source targets and manual collection
+
+The local internal API can persist reusable website or Instagram targets and keep an audit record for every collection attempt. Create targets with `POST /internal/source-targets`, list or inspect them with `GET /internal/source-targets` and `GET /internal/source-targets/:id`, update scheduling metadata with `PATCH /internal/source-targets/:id`, and manually collect an enabled target with `POST /internal/source-targets/:id/collect`. Run history is available from `GET /internal/source-targets/:id/runs` and `GET /internal/source-collection-runs/:id`.
+
+`nextCollectAt` is stored for future scheduling, but no scheduler runs automatically yet. Manual collection uses the same source collectors, structured extraction, duplicate protection, and candidate staging service as one-off ingestion. A successful run creates only a pending candidate; it never approves or publishes a deal.
+
+```sh
+curl --fail-with-body \
+  --request POST \
+  --header 'Content-Type: application/json' \
+  --data '{"source":{"type":"official_website","url":"https://example.com/happy-hour","externalId":"example-happy-hour","label":"Official happy hour page"},"venueId":null}' \
+  http://127.0.0.1:3000/internal/source-targets
+
+curl --fail-with-body \
+  --request POST \
+  http://127.0.0.1:3000/internal/source-targets/SOURCE_TARGET_ID/collect
+```
+
+These endpoints remain unauthenticated, local-development-only `/internal/*` surfaces. Collection run messages are controlled summaries and do not retain fetched response bodies, provider errors, credentials, or secrets.
+
 Submit source content from another terminal:
 
 ```sh
